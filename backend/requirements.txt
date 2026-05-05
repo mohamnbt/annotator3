@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+python-multipart
+opencv-python
+python-dotenv
+# ffprobe required: brew install ffmpeg (macOS)

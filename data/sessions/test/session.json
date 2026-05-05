@@ -1,0 +1,77 @@
+{
+  "name": "test",
+  "description": "",
+  "created_at": "2026-05-06T00:19:53.740905",
+  "images": [
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_000000.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:10.118746",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 0
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_000300.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:16.956428",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 300
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_000600.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:25.454991",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 600
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_000900.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:32.899482",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 900
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_001200.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:41.780467",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 1200
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_001500.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:49.219139",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 1500
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_001800.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:20:58.143131",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 1800
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_002100.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:21:05.029877",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 2100
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_002400.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:21:11.838133",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 2400
+    },
+    {
+      "filename": "DJI_20260505101210_0030_D_frame_002700.jpg",
+      "status": "to_annotate",
+      "added_at": "2026-05-06T00:21:19.228416",
+      "source_video": "DJI_20260505101210_0030_D.MP4",
+      "source_frame": 2700
+    }
+  ]
+}
