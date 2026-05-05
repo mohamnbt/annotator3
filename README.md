@@ -66,3 +66,4 @@ dataset/
 | Molette | Zoom |
 | Espace + glisser | Panoramique |
 | ? | Afficher les raccourcis |
+# annotator3
