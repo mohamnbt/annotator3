@@ -270,23 +270,30 @@ def get_video_rotation(video_path: str) -> int:
             "-show_streams", str(video_path)
         ], capture_output=True, text=True, timeout=10)
         data = json.loads(result.stdout)
+        
         for stream in data.get("streams", []):
+            # Check tags
             tags = stream.get("tags", {})
-            rotate = tags.get("rotate", tags.get("rotation", "0"))
-            r = int(str(rotate).replace("-", "").strip() or "0")
-            raw = int(str(rotate).strip() or "0")
-            return raw
+            if "rotate" in tags or "rotation" in tags:
+                rotate = tags.get("rotate", tags.get("rotation", "0"))
+                return int(float(str(rotate).strip()))
+                
+            # Check side_data_list (ffmpeg >= 5.0)
+            for side_data in stream.get("side_data_list", []):
+                if "rotation" in side_data:
+                    return int(float(str(side_data["rotation"]).strip()))
     except Exception:
-        return 0
+        pass
+    return 0
 
 def fix_frame_rotation(frame, rotation: int):
     """Apply inverse rotation to correct frame orientation."""
     if rotation == 90:
-        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
     elif rotation == 180:
         return cv2.rotate(frame, cv2.ROTATE_180)
     elif rotation == 270 or rotation == -90:
-        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     return frame
 
 @app.post("/api/sessions/{name}/video")
