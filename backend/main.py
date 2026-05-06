@@ -518,7 +518,7 @@ async def export_download(name: str):
     
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         # dataset.yaml
-        yaml_content = """path: dataset
+        yaml_content = """path: .
 train: images/train
 val: images/val
 nc: 1
@@ -528,9 +528,12 @@ names: ['mooring_line']
         
         # train_yolo.py
         train_script = '''from ultralytics import YOLO
+import os
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 model = YOLO("yolov8n-seg.pt")
-model.train(data="dataset/dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")
+model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")
 '''
         zf.writestr("dataset/train_yolo.py", train_script)
         
