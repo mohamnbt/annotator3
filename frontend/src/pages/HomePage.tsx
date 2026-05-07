@@ -26,7 +26,6 @@ export default function HomePage() {
 
   useEffect(() => { load(); }, []);
 
-  // Sanitize name in real time
   useEffect(() => {
     if (!newName) { setSanitized(""); return; }
     const t = setTimeout(async () => {
@@ -71,6 +70,10 @@ export default function HomePage() {
     return { total, annotated, ignored, pct };
   };
 
+  const handleDownloadMerged = () => {
+    window.location.href = "http://localhost:8000/api/export/merged/download";
+  };
+
   return (
     <div className="animate-fade-in">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
@@ -80,9 +83,18 @@ export default function HomePage() {
             Gérez vos sessions de données pour l'entraînement YOLOv8 segmentation
           </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          <span style={{ fontSize: 18 }}>+</span> Nouvelle session
-        </button>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button
+            className="btn btn-secondary"
+            onClick={handleDownloadMerged}
+            title="Télécharger toutes les sessions annotées en un seul dataset fusionné"
+          >
+            ⬇️ Tout fusionné
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+            <span style={{ fontSize: 18 }}>+</span> Nouvelle session
+          </button>
+        </div>
       </div>
 
       {loading ? (
