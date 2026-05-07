@@ -39,29 +39,43 @@ app.add_middleware(
 DATA_DIR = Path(__file__).parent.parent / "data" / "sessions"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# YOLO model (chargé une seule fois au démarrage)
+YOLO_MODEL = None
+YOLO_MODEL_PATH = Path(__file__).parent / "best.pt"
 
-# ─── Global exception handler ───────────────────────────────────────────────
+def get_yolo_model():
+    global YOLO_MODEL
+    if YOLO_MODEL is None and YOLO_MODEL_PATH.exists():
+        try:
+            from ultralytics import YOLO
+            YOLO_MODEL = YOLO(str(YOLO_MODEL_PATH))
+        except Exception as e:
+            print(f"[YOLO] Impossible de charger le modèle: {e}")
+    return YOLO_MODEL
+
+# Préchargement au démarrage
+try:
+    get_yolo_model()
+except Exception:
+    pass
+
+
+# ─── Global exception handler ─────────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc)},
-    )
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 def sanitize_name(name: str) -> str:
-    """Sanitize session name: remove accents, special chars, replace spaces."""
     nfkd = unicodedata.normalize("NFKD", name)
     ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
     ascii_str = ascii_str.replace(" ", "_")
     ascii_str = re.sub(r"[^a-zA-Z0-9_\-]", "", ascii_str)
     return ascii_str
 
-
 def get_session_dir(name: str) -> Path:
     return DATA_DIR / name
-
 
 def load_session_meta(name: str) -> dict:
     session_dir = get_session_dir(name)
@@ -71,35 +85,29 @@ def load_session_meta(name: str) -> dict:
     with open(meta_path, "r") as f:
         return json.load(f)
 
-
 def save_session_meta(name: str, meta: dict):
     session_dir = get_session_dir(name)
     meta_path = session_dir / "session.json"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
-
 def write_yolo_label(session_name: str, stem: str, points: list, img_width: int, img_height: int):
-    """Write YOLO segmentation label file."""
     labels_dir = get_session_dir(session_name) / "labels"
     labels_dir.mkdir(exist_ok=True)
     label_path = labels_dir / f"{stem}.txt"
-
     if not points or len(points) < 2:
         return
-
     normalized = []
     for pt in points:
         x_norm = max(0.0, min(1.0, pt["x"] / img_width))
         y_norm = max(0.0, min(1.0, pt["y"] / img_height))
         normalized.append(f"{x_norm:.6f} {y_norm:.6f}")
-
     line = "0 " + " ".join(normalized) + "\n"
     with open(label_path, "w") as f:
         f.write(line)
 
 
-# ─── Session Routes ─────────────────────────────────────────────────────────
+# ─── Session Routes ────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions")
 async def list_sessions():
@@ -111,7 +119,6 @@ async def list_sessions():
             meta = load_session_meta(d.name)
             sessions.append(meta)
     return sessions
-
 
 @app.post("/api/sessions")
 async def create_session(name: str = Form(...), description: str = Form("")):
@@ -134,11 +141,9 @@ async def create_session(name: str = Form(...), description: str = Form("")):
     save_session_meta(sanitized, meta)
     return meta
 
-
 @app.get("/api/sessions/{name}")
 async def get_session(name: str):
     return load_session_meta(name)
-
 
 @app.delete("/api/sessions/{name}")
 async def delete_session(name: str):
@@ -148,13 +153,12 @@ async def delete_session(name: str):
     shutil.rmtree(session_dir)
     return {"message": f"Session '{name}' deleted"}
 
-
 @app.get("/api/sanitize")
 async def sanitize_name_endpoint(name: str = Query(...)):
     return {"sanitized": sanitize_name(name)}
 
 
-# ─── Image Routes ───────────────────────────────────────────────────────────
+# ─── Image Routes ──────────────────────────────────────────────────────────────
 
 @app.post("/api/sessions/{name}/images")
 async def upload_images(name: str, files: List[UploadFile] = File(...)):
@@ -187,7 +191,6 @@ async def upload_images(name: str, files: List[UploadFile] = File(...)):
     save_session_meta(name, meta)
     return {"uploaded": uploaded, "count": len(uploaded)}
 
-
 @app.get("/api/sessions/{name}/images/{filename}")
 async def get_image(name: str, filename: str):
     filepath = get_session_dir(name) / "images" / filename
@@ -196,7 +199,6 @@ async def get_image(name: str, filename: str):
     ext = filepath.suffix.lower()
     media_type = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
     return StreamingResponse(open(filepath, "rb"), media_type=media_type)
-
 
 @app.delete("/api/sessions/{name}/images/{filename}")
 async def delete_image(name: str, filename: str):
@@ -217,27 +219,84 @@ async def delete_image(name: str, filename: str):
     return {"message": f"Image '{filename}' deleted"}
 
 
-# ─── Video Extraction ───────────────────────────────────────────────────────
+# ─── YOLO Auto-annotation ──────────────────────────────────────────────────────
+
+@app.get("/api/yolo/status")
+async def yolo_status():
+    """Vérifie si le modèle YOLO est disponible."""
+    model_exists = YOLO_MODEL_PATH.exists()
+    model_loaded = YOLO_MODEL is not None
+    return {
+        "model_path": str(YOLO_MODEL_PATH),
+        "model_exists": model_exists,
+        "model_loaded": model_loaded,
+    }
+
+@app.post("/api/sessions/{name}/images/{filename}/predict")
+async def predict_annotation(name: str, filename: str, conf: float = Query(0.5)):
+    """Lance l'inférence YOLO sur une image et retourne les points de segmentation."""
+    model = get_yolo_model()
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Modèle YOLO non disponible. Placez best.pt dans {YOLO_MODEL_PATH}"
+        )
+
+    img_path = get_session_dir(name) / "images" / filename
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    try:
+        results = model.predict(str(img_path), conf=conf, verbose=False)
+        result = results[0]
+
+        if result.masks is None or len(result.masks) == 0:
+            return {"found": False, "points": [], "message": "Aucun objet détecté"}
+
+        # Prendre le masque avec la meilleure confidence
+        best_idx = int(result.boxes.conf.argmax())
+        mask_xy = result.masks.xy[best_idx]  # numpy array (N, 2) en pixels
+
+        img_w = result.orig_shape[1]
+        img_h = result.orig_shape[0]
+
+        points = [
+            {"x": float(pt[0]), "y": float(pt[1])}
+            for pt in mask_xy
+        ]
+
+        return {
+            "found": True,
+            "points": points,
+            "image_width": img_w,
+            "image_height": img_h,
+            "confidence": float(result.boxes.conf[best_idx]),
+            "message": f"{len(points)} points détectés (conf={float(result.boxes.conf[best_idx]):.2f})"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur inférence YOLO: {str(e)}")
+
+
+# ─── Video Extraction ──────────────────────────────────────────────────────────
 
 def get_video_rotation(video_path: str) -> int:
     try:
-        result = subprocess.run([
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_streams", str(video_path)
-        ], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", str(video_path)],
+            capture_output=True, text=True, timeout=10
+        )
         data = json.loads(result.stdout)
         for stream in data.get("streams", []):
             tags = stream.get("tags", {})
             if "rotate" in tags or "rotation" in tags:
-                rotate = tags.get("rotate", tags.get("rotation", "0"))
-                return int(float(str(rotate).strip()))
+                return int(float(str(tags.get("rotate", tags.get("rotation", "0"))).strip()))
             for side_data in stream.get("side_data_list", []):
                 if "rotation" in side_data:
                     return int(float(str(side_data["rotation"]).strip()))
     except Exception:
         pass
     return 0
-
 
 def fix_frame_rotation(frame, rotation: int):
     if rotation == 90:
@@ -248,13 +307,8 @@ def fix_frame_rotation(frame, rotation: int):
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     return frame
 
-
 @app.post("/api/sessions/{name}/video")
-async def extract_video_frames(
-    name: str,
-    file: UploadFile = File(...),
-    frame_interval: int = Form(240),
-):
+async def extract_video_frames(name: str, file: UploadFile = File(...), frame_interval: int = Form(240)):
     meta = load_session_meta(name)
     session_dir = get_session_dir(name)
     images_dir = session_dir / "images"
@@ -293,18 +347,13 @@ async def extract_video_frames(
             frame_idx += 1
         cap.release()
         save_session_meta(name, meta)
-        return {
-            "extracted": extracted,
-            "total_video_frames": total_frames,
-            "fps": fps,
-            "frame_interval": frame_interval,
-        }
+        return {"extracted": extracted, "total_video_frames": total_frames, "fps": fps, "frame_interval": frame_interval}
     finally:
         if tmp_video.exists():
             os.remove(tmp_video)
 
 
-# ─── Annotation Routes ──────────────────────────────────────────────────────
+# ─── Annotation Routes ─────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/annotations/{stem}")
 async def get_annotation(name: str, stem: str):
@@ -313,7 +362,6 @@ async def get_annotation(name: str, stem: str):
         return None
     with open(ann_path, "r") as f:
         return json.load(f)
-
 
 @app.post("/api/sessions/{name}/annotations/{stem}")
 async def save_annotation(name: str, stem: str, data: dict):
@@ -342,7 +390,6 @@ async def save_annotation(name: str, stem: str, data: dict):
     save_session_meta(name, meta)
     return {"message": "Annotation saved", "stem": stem}
 
-
 @app.post("/api/sessions/{name}/images/{filename}/ignore")
 async def ignore_image(name: str, filename: str):
     meta = load_session_meta(name)
@@ -354,7 +401,6 @@ async def ignore_image(name: str, filename: str):
         raise HTTPException(status_code=404, detail="Image not found")
     save_session_meta(name, meta)
     return {"message": f"Image '{filename}' marked as ignored"}
-
 
 @app.get("/api/sessions/{name}/last-conditions")
 async def get_last_conditions(name: str):
@@ -380,7 +426,7 @@ async def get_last_conditions(name: str):
     return None
 
 
-# ─── Export (session individuelle) ──────────────────────────────────────────
+# ─── Export (session individuelle) ────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/export/stats")
 async def export_stats(name: str):
@@ -389,13 +435,7 @@ async def export_stats(name: str):
     total = len(annotated)
     train_count = int(total * 0.8)
     val_count = total - train_count
-    return {
-        "total_annotated": total,
-        "total_images": len(meta["images"]),
-        "train_count": train_count,
-        "val_count": val_count,
-    }
-
+    return {"total_annotated": total, "total_images": len(meta["images"]), "train_count": train_count, "val_count": val_count}
 
 @app.get("/api/sessions/{name}/export/download")
 async def export_download(name: str):
@@ -414,31 +454,12 @@ async def export_download(name: str):
         train_imgs = [val_imgs.pop(0)]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        yaml_content = """path: .
-train: images/train
-val: images/val
-nc: 1
-names: ['mooring_line']
-"""
+        yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
         zf.writestr("dataset/dataset.yaml", yaml_content)
-        train_script = '''from ultralytics import YOLO
-import os
-
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-model = YOLO("yolov8n-seg.pt")
-model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")
-'''
+        train_script = 'from ultralytics import YOLO\nimport os\n\nos.chdir(os.path.dirname(os.path.abspath(__file__)))\n\nmodel = YOLO("yolov8n-seg.pt")\nmodel.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")\n'
         zf.writestr("dataset/train_yolo.py", train_script)
         csv_rows = []
-        csv_header = [
-            "filename", "split", "annotator_name", "current_speed_cm_s",
-            "current_direction", "wave_amplitude_cm", "wave_frequency_hz",
-            "wind_speed_m_s", "camera_angle", "water_turbidity",
-            "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm",
-            "canal_water_depth_cm", "notes", "num_points"
-        ]
-
+        csv_header = ["filename", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
         def add_images(images, split_name):
             for img in images:
                 filename = img["filename"]
@@ -457,28 +478,8 @@ model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_ru
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
                     num_points = len(ann.get("points", []))
-                    zf.writestr(
-                        f"dataset/metadata/{stem}_meta.json",
-                        json.dumps(ann, indent=2, ensure_ascii=False)
-                    )
-                csv_rows.append({
-                    "filename": filename, "split": split_name,
-                    "annotator_name": conditions.get("annotator_name", ""),
-                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
-                    "current_direction": conditions.get("current_direction", ""),
-                    "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""),
-                    "wave_frequency_hz": conditions.get("wave_frequency_hz", ""),
-                    "wind_speed_m_s": conditions.get("wind_speed_m_s", ""),
-                    "camera_angle": conditions.get("camera_angle", ""),
-                    "water_turbidity": conditions.get("water_turbidity", ""),
-                    "lighting_condition": conditions.get("lighting_condition", ""),
-                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
-                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
-                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
-                    "notes": conditions.get("notes", ""),
-                    "num_points": num_points,
-                })
-
+                    zf.writestr(f"dataset/metadata/{stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
+                csv_rows.append({"filename": filename, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
         add_images(train_imgs, "train")
         add_images(val_imgs, "val")
         csv_buf = io.StringIO()
@@ -488,18 +489,13 @@ model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_ru
             writer.writerow(row)
         zf.writestr("dataset/dataset_summary.csv", csv_buf.getvalue())
     buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_{name}.zip"},
-    )
+    return StreamingResponse(buf, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_{name}.zip"})
 
 
-# ─── Export fusionné (toutes sessions) ──────────────────────────────────────
+# ─── Export fusionné (toutes sessions) ────────────────────────────────────────
 
 @app.get("/api/export/merged/stats")
 async def merged_export_stats():
-    """Stats globales avant export fusionné."""
     total_annotated = 0
     total_images = 0
     for d in sorted(DATA_DIR.iterdir()):
@@ -509,17 +505,10 @@ async def merged_export_stats():
             total_annotated += sum(1 for img in meta["images"] if img.get("status") == "annotated")
     train_count = int(total_annotated * 0.8)
     val_count = total_annotated - train_count
-    return {
-        "total_annotated": total_annotated,
-        "total_images": total_images,
-        "train_count": train_count,
-        "val_count": val_count,
-    }
-
+    return {"total_annotated": total_annotated, "total_images": total_images, "train_count": train_count, "val_count": val_count}
 
 @app.get("/api/export/merged/download")
 async def export_merged_download():
-    """Fusionne toutes les sessions annotées en un seul dataset ZIP."""
     all_annotated = []
     for d in sorted(DATA_DIR.iterdir()):
         if d.is_dir() and (d / "session.json").exists():
@@ -527,45 +516,22 @@ async def export_merged_download():
             for img in meta["images"]:
                 if img.get("status") == "annotated":
                     all_annotated.append((d.name, img))
-
     if not all_annotated:
         raise HTTPException(status_code=400, detail="Aucune image annotée trouvée")
-
     random.seed(42)
     shuffled = all_annotated.copy()
     random.shuffle(shuffled)
     split_idx = max(1, int(len(shuffled) * 0.8))
     train_items = shuffled[:split_idx]
     val_items = shuffled[split_idx:] if split_idx < len(shuffled) else []
-
     buf = io.BytesIO()
     csv_rows = []
-    csv_header = [
-        "filename", "session", "split", "annotator_name", "current_speed_cm_s",
-        "current_direction", "wave_amplitude_cm", "wave_frequency_hz",
-        "wind_speed_m_s", "camera_angle", "water_turbidity",
-        "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm",
-        "canal_water_depth_cm", "notes", "num_points"
-    ]
-
+    csv_header = ["filename", "session", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        yaml_content = """path: .
-train: images/train
-val: images/val
-nc: 1
-names: ['mooring_line']
-"""
+        yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
         zf.writestr("dataset/dataset.yaml", yaml_content)
-        train_script = '''from ultralytics import YOLO
-import os
-
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-model = YOLO("yolov8n-seg.pt")
-model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run_merged")
-'''
+        train_script = 'from ultralytics import YOLO\nimport os\n\nos.chdir(os.path.dirname(os.path.abspath(__file__)))\n\nmodel = YOLO("yolov8n-seg.pt")\nmodel.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run_merged")\n'
         zf.writestr("dataset/train_yolo.py", train_script)
-
         def add_merged_items(items, split_name):
             for session_name, img in items:
                 session_dir = get_session_dir(session_name)
@@ -588,28 +554,8 @@ model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_ru
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
                     num_points = len(ann.get("points", []))
-                    zf.writestr(
-                        f"dataset/metadata/{unique_stem}_meta.json",
-                        json.dumps(ann, indent=2, ensure_ascii=False)
-                    )
-                csv_rows.append({
-                    "filename": unique_filename, "session": session_name, "split": split_name,
-                    "annotator_name": conditions.get("annotator_name", ""),
-                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
-                    "current_direction": conditions.get("current_direction", ""),
-                    "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""),
-                    "wave_frequency_hz": conditions.get("wave_frequency_hz", ""),
-                    "wind_speed_m_s": conditions.get("wind_speed_m_s", ""),
-                    "camera_angle": conditions.get("camera_angle", ""),
-                    "water_turbidity": conditions.get("water_turbidity", ""),
-                    "lighting_condition": conditions.get("lighting_condition", ""),
-                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
-                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
-                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
-                    "notes": conditions.get("notes", ""),
-                    "num_points": num_points,
-                })
-
+                    zf.writestr(f"dataset/metadata/{unique_stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
+                csv_rows.append({"filename": unique_filename, "session": session_name, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
         add_merged_items(train_items, "train")
         add_merged_items(val_items, "val")
         csv_buf = io.StringIO()
@@ -618,17 +564,12 @@ model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_ru
         for row in csv_rows:
             writer.writerow(row)
         zf.writestr("dataset/dataset_summary.csv", csv_buf.getvalue())
-
     buf.seek(0)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_merged_{timestamp}.zip"},
-    )
+    return StreamingResponse(buf, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_merged_{timestamp}.zip"})
 
 
-# ─── Statistics ──────────────────────────────────────────────────────────────
+# ─── Statistics ────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/statistics")
 async def get_statistics(name: str):
@@ -638,13 +579,7 @@ async def get_statistics(name: str):
     annotated = sum(1 for img in meta["images"] if img.get("status") == "annotated")
     ignored = sum(1 for img in meta["images"] if img.get("status") == "ignored")
     remaining = total - annotated - ignored
-    speeds = []
-    camera_angles = {}
-    current_directions = {}
-    wave_data = []
-    point_counts = []
-    annotators = {}
-    condition_counts = {}
+    speeds = []; camera_angles = {}; current_directions = {}; wave_data = []; point_counts = []; annotators = {}; condition_counts = {}
     for img in meta["images"]:
         if img.get("status") != "annotated":
             continue
@@ -659,10 +594,8 @@ async def get_statistics(name: str):
         point_counts.append(len(points))
         speed = conditions.get("current_speed_cm_s")
         if speed is not None and speed != "":
-            try:
-                speeds.append(float(speed))
-            except (ValueError, TypeError):
-                pass
+            try: speeds.append(float(speed))
+            except (ValueError, TypeError): pass
         angle = conditions.get("camera_angle", "")
         if angle and angle != "—":
             camera_angles[angle] = camera_angles.get(angle, 0) + 1
@@ -674,10 +607,8 @@ async def get_statistics(name: str):
         wave_amp = conditions.get("wave_amplitude_cm")
         wave_speed = conditions.get("current_speed_cm_s")
         if wave_amp is not None and wave_speed is not None:
-            try:
-                wave_data.append({"amplitude": float(wave_amp), "speed": float(wave_speed)})
-            except (ValueError, TypeError):
-                pass
+            try: wave_data.append({"amplitude": float(wave_amp), "speed": float(wave_speed)})
+            except (ValueError, TypeError): pass
         annotator = conditions.get("annotator_name", "Anonyme") or "Anonyme"
         annotators[annotator] = annotators.get(annotator, 0) + 1
     balance_warnings = [f"{k}: {v} échantillons" for k, v in condition_counts.items() if v < 5]
@@ -692,17 +623,7 @@ async def get_statistics(name: str):
                 hi = lo + bin_width
                 count = sum(1 for s in speeds if lo <= s < hi or (i == n_bins - 1 and s == hi))
                 speed_histogram.append({"range": f"{lo:.1f}-{hi:.1f}", "count": count})
-    return {
-        "total": total, "annotated": annotated, "ignored": ignored, "remaining": remaining,
-        "speed_histogram": speed_histogram,
-        "camera_angles": [{"name": k, "value": v} for k, v in camera_angles.items()],
-        "current_directions": [{"name": k, "value": v} for k, v in current_directions.items()],
-        "wave_scatter": wave_data,
-        "avg_points": round(sum(point_counts) / len(point_counts), 1) if point_counts else 0,
-        "point_counts": point_counts,
-        "annotators": [{"name": k, "count": v} for k, v in annotators.items()],
-        "balance_warnings": balance_warnings,
-    }
+    return {"total": total, "annotated": annotated, "ignored": ignored, "remaining": remaining, "speed_histogram": speed_histogram, "camera_angles": [{"name": k, "value": v} for k, v in camera_angles.items()], "current_directions": [{"name": k, "value": v} for k, v in current_directions.items()], "wave_scatter": wave_data, "avg_points": round(sum(point_counts) / len(point_counts), 1) if point_counts else 0, "point_counts": point_counts, "annotators": [{"name": k, "count": v} for k, v in annotators.items()], "balance_warnings": balance_warnings}
 
 
 if __name__ == "__main__":

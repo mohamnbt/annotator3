@@ -8,6 +8,8 @@ import {
 import ConditionsPanel from "../components/ConditionsPanel";
 import ShortcutsPanel from "../components/ShortcutsPanel";
 
+const API = "http://localhost:8000";
+
 interface Point { x: number; y: number }
 
 function stemOf(filename: string) {
@@ -32,13 +34,13 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [isRevision, setIsRevision] = useState(false);
+  const [isPredicting, setIsPredicting] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isSpacePressedRef = useRef(false);
   const [, navigate] = useLocation();
 
-  // Load session
   useEffect(() => {
     getSession(sessionName).then((s) => {
       setSession(s);
@@ -47,7 +49,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     }).catch(() => navigate("/"));
   }, [sessionName, navigate]);
 
-  // Load annotator name from localStorage
   useEffect(() => {
     const saved = localStorage.getItem("cosmer_annotator_name");
     if (saved) setConditions((c) => ({ ...c, annotator_name: saved }));
@@ -57,7 +58,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
   const filename = currentImage?.filename || "";
   const stem = stemOf(filename);
 
-  // Load image + existing annotation
   useEffect(() => {
     if (!session || !filename) return;
     setPoints([]);
@@ -73,7 +73,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
       setZoom(1);
       setPan({ x: 0, y: 0 });
 
-      // Check for existing annotation
       getAnnotation(sessionName, stem).then((ann) => {
         if (ann && ann.points) {
           setIsRevision(true);
@@ -94,35 +93,27 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     img.src = imageUrl(sessionName, filename);
   }, [session, currentIdx, filename, sessionName, stem]);
 
-  // Draw canvas
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
     if (!canvas || !img || !imgSize.w) return;
-
     const container = containerRef.current;
     if (!container) return;
     canvas.width = container.clientWidth;
     canvas.height = container.clientHeight;
-
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
-
-    // Calculate fitted image dimensions
     const scale = Math.min(canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
     const iw = img.naturalWidth * scale;
     const ih = img.naturalHeight * scale;
     const ix = (canvas.width / zoom - iw) / 2;
     const iy = (canvas.height / zoom - ih) / 2;
-
     ctx.drawImage(img, ix, iy, iw, ih);
-
     const drawPolyline = (pts: Point[], color: string, firstColor: string) => {
       if (pts.length === 0) return;
-      // Lines
       if (pts.length > 1) {
         ctx.beginPath();
         ctx.setLineDash([6, 4]);
@@ -135,7 +126,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
         ctx.stroke();
         ctx.setLineDash([]);
       }
-      // Points
       pts.forEach((p, i) => {
         const px = ix + (p.x / img.naturalWidth) * iw;
         const py = iy + (p.y / img.naturalHeight) * ih;
@@ -148,20 +138,17 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
         ctx.stroke();
       });
     };
-
     if (mode === "centerline") {
       drawPolyline(points, "#00FFFF", "#00FF88");
     } else {
       drawPolyline(leftPoints, "#00FFFF", "#00FF88");
       drawPolyline(rightPoints, "#FFA500", "#FFD700");
     }
-
     ctx.restore();
   }, [points, leftPoints, rightPoints, mode, zoom, pan, imgSize]);
 
   useEffect(() => { draw(); }, [draw]);
 
-  // Resize observer
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -170,7 +157,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     return () => ro.disconnect();
   }, [draw]);
 
-  // Convert screen coords to image coords
   const screenToImage = (ex: number, ey: number): Point | null => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
@@ -232,16 +218,14 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (isPanning) {
-      setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
-    }
+    if (isPanning) setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
   };
 
   const handleMouseUp = () => { setIsPanning(false); };
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 1500);
+    setTimeout(() => setToast(null), 2000);
   };
 
   const goTo = (idx: number) => {
@@ -264,12 +248,9 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     const activePoints = mode === "centerline" ? points : [...leftPoints, ...rightPoints];
     if (activePoints.length < 2) { showToast("Minimum 2 points requis"); return; }
     if (!session || !currentImage) return;
-
-    // Save annotator name
     if (conditions.annotator_name) {
       localStorage.setItem("cosmer_annotator_name", conditions.annotator_name);
     }
-
     const data: AnnotationData = {
       points: mode === "centerline" ? points : [],
       left_points: mode === "contour" ? leftPoints : undefined,
@@ -279,11 +260,9 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
       image_width: imgSize.w,
       image_height: imgSize.h,
     };
-
     try {
       await saveAnnotation(sessionName, stem, data);
       showToast("Annotation sauvegardée ✓");
-      // Reload session to update statuses
       const updated = await getSession(sessionName);
       setSession(updated);
       setTimeout(goNextUnannotated, 300);
@@ -333,12 +312,39 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     }
   };
 
-  // Keyboard shortcuts
+  // 🤖 Auto-annotation YOLO
+  const handleAutoAnnotate = async () => {
+    if (!currentImage) return;
+    setIsPredicting(true);
+    showToast("🤖 Inférence YOLO en cours...");
+    try {
+      const res = await fetch(
+        `${API}/api/sessions/${sessionName}/images/${encodeURIComponent(filename)}/predict?conf=0.5`
+      );
+      if (!res.ok) {
+        const err = await res.json();
+        showToast("❌ " + (err.detail || "Erreur YOLO"));
+        return;
+      }
+      const data = await res.json();
+      if (!data.found || data.points.length < 2) {
+        showToast("⚠️ Aucun câble détecté");
+        return;
+      }
+      setMode("centerline");
+      setPoints(data.points);
+      showToast(`✅ ${data.points.length} points détectés (conf ${(data.confidence * 100).toFixed(0)}%) — vérifiez puis confirmez`);
+    } catch (e: any) {
+      showToast("❌ Erreur: " + e.message);
+    } finally {
+      setIsPredicting(false);
+    }
+  };
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-
       if (e.key === "?") { setShowShortcuts((s) => !s); return; }
       if (e.key === "Escape") {
         if (showShortcuts) { setShowShortcuts(false); return; }
@@ -358,7 +364,6 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
     return () => window.removeEventListener("keydown", handler);
   });
 
-  // Space key for panning
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.code === "Space" && (e.target as HTMLElement)?.tagName !== "INPUT") {
@@ -368,8 +373,8 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
       }
     };
     const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") { 
-        document.body.style.cursor = ""; 
+      if (e.code === "Space") {
+        document.body.style.cursor = "";
         isSpacePressedRef.current = false;
       }
     };
@@ -393,54 +398,21 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn btn-secondary" style={{ padding: "4px 12px", fontSize: 12 }}
-            onClick={() => navigate(`/session/${sessionName}`)}>
-            ← Retour
-          </button>
+            onClick={() => navigate(`/session/${sessionName}`)}>← Retour</button>
           <span style={{ fontSize: 14, fontWeight: 600 }}>🤿 {sessionName}</span>
-          <span style={{ fontSize: 13, color: "var(--color-text-dim)" }}>
-            {currentIdx + 1} / {session.images.length}
-          </span>
+          <span style={{ fontSize: 13, color: "var(--color-text-dim)" }}>{currentIdx + 1} / {session.images.length}</span>
           <span className="badge badge-cyan">{pointCount} points</span>
           {isRevision && <span className="badge badge-blue">Mode révision</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Mode toggle */}
-          <div style={{
-            display: "flex", border: "1px solid var(--color-border)", borderRadius: 6, overflow: "hidden",
-          }}>
-            <button style={{
-              padding: "4px 12px", fontSize: 11, border: "none", cursor: "pointer",
-              background: mode === "centerline" ? "var(--color-accent)" : "var(--color-surface)",
-              color: mode === "centerline" ? "#0D1117" : "var(--color-text-dim)",
-              fontWeight: 500,
-            }} onClick={() => setMode("centerline")}>
-              Ligne centrale
-            </button>
-            <button style={{
-              padding: "4px 12px", fontSize: 11, border: "none", cursor: "pointer",
-              background: mode === "contour" ? "var(--color-accent)" : "var(--color-surface)",
-              color: mode === "contour" ? "#0D1117" : "var(--color-text-dim)",
-              fontWeight: 500,
-            }} onClick={() => setMode("contour")}>
-              Contour câble
-            </button>
+          <div style={{ display: "flex", border: "1px solid var(--color-border)", borderRadius: 6, overflow: "hidden" }}>
+            <button style={{ padding: "4px 12px", fontSize: 11, border: "none", cursor: "pointer", background: mode === "centerline" ? "var(--color-accent)" : "var(--color-surface)", color: mode === "centerline" ? "#0D1117" : "var(--color-text-dim)", fontWeight: 500 }} onClick={() => setMode("centerline")}>Ligne centrale</button>
+            <button style={{ padding: "4px 12px", fontSize: 11, border: "none", cursor: "pointer", background: mode === "contour" ? "var(--color-accent)" : "var(--color-surface)", color: mode === "contour" ? "#0D1117" : "var(--color-text-dim)", fontWeight: 500 }} onClick={() => setMode("contour")}>Contour câble</button>
           </div>
           {mode === "contour" && (
             <div style={{ display: "flex", border: "1px solid var(--color-border)", borderRadius: 6, overflow: "hidden" }}>
-              <button style={{
-                padding: "4px 10px", fontSize: 11, border: "none", cursor: "pointer",
-                background: activeSide === "left" ? "#00FFFF" : "var(--color-surface)",
-                color: activeSide === "left" ? "#0D1117" : "var(--color-text-dim)",
-              }} onClick={() => setActiveSide("left")}>
-                Gauche ({leftPoints.length})
-              </button>
-              <button style={{
-                padding: "4px 10px", fontSize: 11, border: "none", cursor: "pointer",
-                background: activeSide === "right" ? "#FFA500" : "var(--color-surface)",
-                color: activeSide === "right" ? "#0D1117" : "var(--color-text-dim)",
-              }} onClick={() => setActiveSide("right")}>
-                Droite ({rightPoints.length})
-              </button>
+              <button style={{ padding: "4px 10px", fontSize: 11, border: "none", cursor: "pointer", background: activeSide === "left" ? "#00FFFF" : "var(--color-surface)", color: activeSide === "left" ? "#0D1117" : "var(--color-text-dim)" }} onClick={() => setActiveSide("left")}>Gauche ({leftPoints.length})</button>
+              <button style={{ padding: "4px 10px", fontSize: 11, border: "none", cursor: "pointer", background: activeSide === "right" ? "#FFA500" : "var(--color-surface)", color: activeSide === "right" ? "#0D1117" : "var(--color-text-dim)" }} onClick={() => setActiveSide("right")}>Droite ({rightPoints.length})</button>
             </div>
           )}
           <button className="shortcut-key" style={{ cursor: "pointer" }} onClick={() => setShowShortcuts(true)}>?</button>
@@ -448,44 +420,18 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
       </div>
 
       {isRevision && (
-        <div style={{
-          background: "rgba(88, 166, 255, 0.1)", borderBottom: "1px solid rgba(88, 166, 255, 0.3)",
-          padding: "6px 16px", fontSize: 13, color: "var(--color-blue)", textAlign: "center",
-        }}>
+        <div style={{ background: "rgba(88, 166, 255, 0.1)", borderBottom: "1px solid rgba(88, 166, 255, 0.3)", padding: "6px 16px", fontSize: 13, color: "var(--color-blue)", textAlign: "center" }}>
           🔄 Mode révision — Cette image a déjà été annotée. Modifiez et mettez à jour.
         </div>
       )}
 
-      {/* Main layout */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         {/* Left: thumbnails */}
-        <div style={{
-          width: 120, background: "var(--color-surface)", borderRight: "1px solid var(--color-border)",
-          overflowY: "auto", flexShrink: 0, padding: 4,
-        }}>
+        <div style={{ width: 120, background: "var(--color-surface)", borderRight: "1px solid var(--color-border)", overflowY: "auto", flexShrink: 0, padding: 4 }}>
           {session.images.map((img, i) => (
-            <div
-              key={img.filename}
-              onClick={() => goTo(i)}
-              style={{
-                position: "relative", cursor: "pointer", borderRadius: 6, overflow: "hidden",
-                marginBottom: 4, border: i === currentIdx ? "2px solid var(--color-accent)" : "2px solid transparent",
-                opacity: i === currentIdx ? 1 : 0.7,
-                transition: "all 0.15s",
-              }}
-            >
-              <img
-                src={imageUrl(sessionName, img.filename)}
-                alt=""
-                style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block" }}
-                loading="lazy"
-              />
-              <div style={{
-                position: "absolute", top: 3, right: 3, width: 8, height: 8, borderRadius: "50%",
-                background: img.status === "annotated" ? "var(--color-green)" :
-                  img.status === "ignored" ? "var(--color-orange)" : "var(--color-text-dim)",
-                border: "1.5px solid rgba(0,0,0,0.5)",
-              }} />
+            <div key={img.filename} onClick={() => goTo(i)} style={{ position: "relative", cursor: "pointer", borderRadius: 6, overflow: "hidden", marginBottom: 4, border: i === currentIdx ? "2px solid var(--color-accent)" : "2px solid transparent", opacity: i === currentIdx ? 1 : 0.7, transition: "all 0.15s" }}>
+              <img src={imageUrl(sessionName, img.filename)} alt="" style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block" }} loading="lazy" />
+              <div style={{ position: "absolute", top: 3, right: 3, width: 8, height: 8, borderRadius: "50%", background: img.status === "annotated" ? "var(--color-green)" : img.status === "ignored" ? "var(--color-orange)" : "var(--color-text-dim)", border: "1.5px solid rgba(0,0,0,0.5)" }} />
             </div>
           ))}
         </div>
@@ -503,38 +449,21 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
             onMouseLeave={handleMouseUp}
             style={{ width: "100%", height: "100%", display: "block" }}
           />
-          {/* Tooltip */}
-          <div style={{
-            position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
-            background: "rgba(0,0,0,0.8)", padding: "6px 14px", borderRadius: 8, fontSize: 12,
-            color: "var(--color-text-dim)", pointerEvents: "none", whiteSpace: "nowrap",
-          }}>
+          <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.8)", padding: "6px 14px", borderRadius: 8, fontSize: 12, color: "var(--color-text-dim)", pointerEvents: "none", whiteSpace: "nowrap" }}>
             Clic = ajouter point · Clic droit = annuler · Entrée = confirmer · Molette = zoom
           </div>
-          {/* Zoom indicator */}
-          <div style={{
-            position: "absolute", bottom: 12, left: 12, display: "flex", gap: 4, alignItems: "center",
-          }}>
-            <span style={{ fontSize: 11, color: "var(--color-text-dim)", background: "rgba(0,0,0,0.6)", padding: "2px 8px", borderRadius: 4 }}>
-              {Math.round(zoom * 100)}%
-            </span>
+          <div style={{ position: "absolute", bottom: 12, left: 12, display: "flex", gap: 4, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "var(--color-text-dim)", background: "rgba(0,0,0,0.6)", padding: "2px 8px", borderRadius: 4 }}>{Math.round(zoom * 100)}%</span>
           </div>
-          {/* Zoom buttons */}
           <div style={{ position: "absolute", bottom: 12, right: 12, display: "flex", gap: 4 }}>
-            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 14 }}
-              onClick={() => setZoom((z) => Math.min(10, z * 1.2))}>+</button>
-            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 14 }}
-              onClick={() => setZoom((z) => Math.max(0.2, z / 1.2))}>−</button>
-            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 11 }}
-              onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>Reset</button>
+            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 14 }} onClick={() => setZoom((z) => Math.min(10, z * 1.2))}>+</button>
+            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 14 }} onClick={() => setZoom((z) => Math.max(0.2, z / 1.2))}>−</button>
+            <button className="btn btn-secondary" style={{ padding: "2px 8px", fontSize: 11 }} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>Reset</button>
           </div>
         </div>
 
-        {/* Right: conditions panel */}
-        <div style={{
-          width: 320, background: "var(--color-surface)", borderLeft: "1px solid var(--color-border)",
-          overflowY: "auto", flexShrink: 0, padding: 16,
-        }}>
+        {/* Right: conditions + actions */}
+        <div style={{ width: 320, background: "var(--color-surface)", borderLeft: "1px solid var(--color-border)", overflowY: "auto", flexShrink: 0, padding: 16 }}>
           <ConditionsPanel
             conditions={conditions}
             onChange={setConditions}
@@ -543,6 +472,23 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
           />
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 16 }}>
+            {/* Bouton Auto-annotation YOLO */}
+            <button
+              className="btn"
+              style={{
+                width: "100%",
+                justifyContent: "center",
+                background: isPredicting ? "rgba(139, 92, 246, 0.3)" : "rgba(139, 92, 246, 0.15)",
+                border: "1px solid rgba(139, 92, 246, 0.5)",
+                color: "#a78bfa",
+                cursor: isPredicting ? "wait" : "pointer",
+              }}
+              onClick={handleAutoAnnotate}
+              disabled={isPredicting}
+            >
+              {isPredicting ? "⏳ Analyse en cours..." : "🤖 Auto-annoter (YOLO)"}
+            </button>
+
             <button className="btn btn-green" style={{ width: "100%", justifyContent: "center" }} onClick={handleSave}>
               {isRevision ? "🔄 Mettre à jour" : "✅ Confirmer annotation"}
             </button>
@@ -556,10 +502,7 @@ export default function AnnotatorPage({ sessionName }: { sessionName: string }) 
         </div>
       </div>
 
-      {/* Toast */}
       {toast && <div className="toast toast-success">{toast}</div>}
-
-      {/* Shortcuts */}
       {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
     </div>
   );
