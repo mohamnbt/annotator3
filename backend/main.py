@@ -232,7 +232,7 @@ async def yolo_status():
         "model_loaded": model_loaded,
     }
 
-@app.post("/api/sessions/{name}/images/{filename}/predict")
+@app.get("/api/sessions/{name}/images/{filename}/predict")
 async def predict_annotation(name: str, filename: str, conf: float = Query(0.5)):
     """Lance l'inférence YOLO sur une image et retourne les points de segmentation."""
     model = get_yolo_model()
@@ -253,9 +253,8 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
         if result.masks is None or len(result.masks) == 0:
             return {"found": False, "points": [], "message": "Aucun objet détecté"}
 
-        # Prendre le masque avec la meilleure confidence
         best_idx = int(result.boxes.conf.argmax())
-        mask_xy = result.masks.xy[best_idx]  # numpy array (N, 2) en pixels
+        mask_xy = result.masks.xy[best_idx]
 
         img_w = result.orig_shape[1]
         img_h = result.orig_shape[0]
