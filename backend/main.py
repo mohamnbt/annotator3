@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import cv2
+import numpy as np
 
 app = FastAPI(title="COSMER Annotator API", version="1.0.0")
 
@@ -105,6 +106,83 @@ def write_yolo_label(session_name: str, stem: str, points: list, img_width: int,
     line = "0 " + " ".join(normalized) + "\n"
     with open(label_path, "w") as f:
         f.write(line)
+
+
+def extract_centerline_from_mask(mask_xy: np.ndarray, img_w: int, img_h: int, n_points: int = 40) -> list:
+    """
+    Extrait la ligne centrale (squelette) d'un masque de segmentation.
+    Retourne une liste ordonnée de points {x, y} le long de l'axe du câble.
+    """
+    # Rasteriser le polygone masque dans une image binaire
+    mask_img = np.zeros((img_h, img_w), dtype=np.uint8)
+    pts = mask_xy.astype(np.int32).reshape((-1, 1, 2))
+    cv2.fillPoly(mask_img, [pts], 255)
+
+    # Squelettisation via distance transform + thinning
+    try:
+        from skimage.morphology import skeletonize
+        binary = mask_img > 0
+        skeleton = skeletonize(binary).astype(np.uint8) * 255
+    except ImportError:
+        # Fallback sans scikit-image : on utilise le contour médian
+        skeleton = mask_img.copy()
+
+    # Récupérer les pixels du squelette
+    ys, xs = np.where(skeleton > 0)
+    if len(xs) == 0:
+        # Fallback : centroïdes par tranches verticales/horizontales
+        return _centerline_slices(mask_img, img_w, img_h, n_points)
+
+    skeleton_pts = np.stack([xs, ys], axis=1).astype(float)
+
+    # Ordonner les points du squelette du haut vers le bas (ou gauche→droite)
+    # On utilise une projection PCA pour trouver l'axe principal
+    mean = skeleton_pts.mean(axis=0)
+    centered = skeleton_pts - mean
+    cov = np.cov(centered.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    principal_axis = eigenvectors[:, np.argmax(eigenvalues)]
+    projections = centered @ principal_axis
+    order = np.argsort(projections)
+    ordered_pts = skeleton_pts[order]
+
+    # Sous-échantillonner à n_points régulièrement espacés
+    if len(ordered_pts) > n_points:
+        indices = np.linspace(0, len(ordered_pts) - 1, n_points, dtype=int)
+        ordered_pts = ordered_pts[indices]
+
+    return [{"x": float(p[0]), "y": float(p[1])} for p in ordered_pts]
+
+
+def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: int) -> list:
+    """Fallback : centroïde par tranche pour estimer la ligne centrale."""
+    points = []
+    # Déterminer si le câble est plutôt vertical ou horizontal
+    ys, xs = np.where(mask_img > 0)
+    if len(xs) == 0:
+        return []
+    span_x = xs.max() - xs.min()
+    span_y = ys.max() - ys.min()
+
+    if span_y >= span_x:
+        # Câble vertical : tranches horizontales
+        y_min, y_max = int(ys.min()), int(ys.max())
+        for i in range(n_points):
+            y = int(y_min + (y_max - y_min) * i / (n_points - 1))
+            row = np.where(mask_img[y, :] > 0)[0]
+            if len(row) > 0:
+                x = float(row.mean())
+                points.append({"x": x, "y": float(y)})
+    else:
+        # Câble horizontal : tranches verticales
+        x_min, x_max = int(xs.min()), int(xs.max())
+        for i in range(n_points):
+            x = int(x_min + (x_max - x_min) * i / (n_points - 1))
+            col = np.where(mask_img[:, x] > 0)[0]
+            if len(col) > 0:
+                y = float(col.mean())
+                points.append({"x": float(x), "y": y})
+    return points
 
 
 # ─── Session Routes ────────────────────────────────────────────────────────────
@@ -234,7 +312,7 @@ async def yolo_status():
 
 @app.get("/api/sessions/{name}/images/{filename}/predict")
 async def predict_annotation(name: str, filename: str, conf: float = Query(0.5)):
-    """Lance l'inférence YOLO sur une image et retourne les points de segmentation."""
+    """Lance l'inférence YOLO et retourne la ligne centrale du câble (squelette)."""
     model = get_yolo_model()
     if model is None:
         raise HTTPException(
@@ -254,23 +332,26 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
             return {"found": False, "points": [], "message": "Aucun objet détecté"}
 
         best_idx = int(result.boxes.conf.argmax())
-        mask_xy = result.masks.xy[best_idx]
+        mask_xy = result.masks.xy[best_idx]  # contour du masque en pixels
 
         img_w = result.orig_shape[1]
         img_h = result.orig_shape[0]
 
-        points = [
-            {"x": float(pt[0]), "y": float(pt[1])}
-            for pt in mask_xy
-        ]
+        # Extraire la ligne centrale depuis le masque
+        points = extract_centerline_from_mask(mask_xy, img_w, img_h, n_points=40)
 
+        if not points:
+            # Fallback : retourner le contour brut si squelette vide
+            points = [{"x": float(pt[0]), "y": float(pt[1])} for pt in mask_xy]
+
+        conf_val = float(result.boxes.conf[best_idx])
         return {
             "found": True,
             "points": points,
             "image_width": img_w,
             "image_height": img_h,
-            "confidence": float(result.boxes.conf[best_idx]),
-            "message": f"{len(points)} points détectés (conf={float(result.boxes.conf[best_idx]):.2f})"
+            "confidence": conf_val,
+            "message": f"{len(points)} points (centerline, conf={conf_val:.2f})"
         }
 
     except Exception as e:
