@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
 
-app = FastAPI(title="COSMER Annotator API", version="1.0.0")
+app = FastAPI(title="COSMER Annotator API", version="1.1.0")
 
 # CORS
 app.add_middleware(
@@ -108,35 +108,82 @@ def write_yolo_label(session_name: str, stem: str, points: list, img_width: int,
         f.write(line)
 
 
+def write_yolo_pose_label(
+    session_name: str, stem: str,
+    pt_ancrage: dict, pt_bouee: dict,
+    img_width: int, img_height: int
+):
+    """
+    Génère un label YOLOv8-pose avec 2 keypoints :
+      kp1 = ancrage (bas du câble)
+      kp2 = bas de la bouée (point d'attache)
+    Format : <class> <xc> <yc> <w> <h> <kp1x> <kp1y> <vis1> <kp2x> <kp2y> <vis2>
+    Tout normalisé entre 0 et 1. vis=2 (visible et annoté).
+    """
+    labels_dir = get_session_dir(session_name) / "labels"
+    labels_dir.mkdir(exist_ok=True)
+    label_path = labels_dir / f"{stem}.txt"
+
+    x1, y1 = pt_ancrage["x"], pt_ancrage["y"]
+    x2, y2 = pt_bouee["x"],   pt_bouee["y"]
+
+    # Bounding box avec marge 5%
+    marge_x = max(20, int(0.05 * img_width))
+    marge_y = max(20, int(0.05 * img_height))
+    bx_min = max(0, min(x1, x2) - marge_x)
+    by_min = max(0, min(y1, y2) - marge_y)
+    bx_max = min(img_width,  max(x1, x2) + marge_x)
+    by_max = min(img_height, max(y1, y2) + marge_y)
+
+    xc = ((bx_min + bx_max) / 2) / img_width
+    yc = ((by_min + by_max) / 2) / img_height
+    bw = (bx_max - bx_min) / img_width
+    bh = (by_max - by_min) / img_height
+
+    kp1x, kp1y = x1 / img_width, y1 / img_height
+    kp2x, kp2y = x2 / img_width, y2 / img_height
+
+    line = (
+        f"0 {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f} "
+        f"{kp1x:.6f} {kp1y:.6f} 2 "
+        f"{kp2x:.6f} {kp2y:.6f} 2\n"
+    )
+    with open(label_path, "w") as f:
+        f.write(line)
+
+
+def compute_theta(pt1: dict, pt2: dict) -> float:
+    """
+    θ = angle entre la verticale et la droite pt1→pt2.
+    pt1 = ancrage (bas), pt2 = bas bouée (haut).
+    En pixels y augmente vers le BAS → on inverse dy.
+    """
+    dx = pt2["x"] - pt1["x"]
+    dy = pt1["y"] - pt2["y"]   # inversé car axe y image
+    return float(np.degrees(np.arctan2(abs(dx), abs(dy))))
+
+
 def extract_centerline_from_mask(mask_xy: np.ndarray, img_w: int, img_h: int, n_points: int = 40) -> list:
     """
     Extrait la ligne centrale (squelette) d'un masque de segmentation.
     Retourne une liste ordonnée de points {x, y} le long de l'axe du câble.
     """
-    # Rasteriser le polygone masque dans une image binaire
     mask_img = np.zeros((img_h, img_w), dtype=np.uint8)
     pts = mask_xy.astype(np.int32).reshape((-1, 1, 2))
     cv2.fillPoly(mask_img, [pts], 255)
 
-    # Squelettisation via distance transform + thinning
     try:
         from skimage.morphology import skeletonize
         binary = mask_img > 0
         skeleton = skeletonize(binary).astype(np.uint8) * 255
     except ImportError:
-        # Fallback sans scikit-image : on utilise le contour médian
         skeleton = mask_img.copy()
 
-    # Récupérer les pixels du squelette
     ys, xs = np.where(skeleton > 0)
     if len(xs) == 0:
-        # Fallback : centroïdes par tranches verticales/horizontales
         return _centerline_slices(mask_img, img_w, img_h, n_points)
 
     skeleton_pts = np.stack([xs, ys], axis=1).astype(float)
-
-    # Ordonner les points du squelette du haut vers le bas (ou gauche→droite)
-    # On utilise une projection PCA pour trouver l'axe principal
     mean = skeleton_pts.mean(axis=0)
     centered = skeleton_pts - mean
     cov = np.cov(centered.T)
@@ -146,7 +193,6 @@ def extract_centerline_from_mask(mask_xy: np.ndarray, img_w: int, img_h: int, n_
     order = np.argsort(projections)
     ordered_pts = skeleton_pts[order]
 
-    # Sous-échantillonner à n_points régulièrement espacés
     if len(ordered_pts) > n_points:
         indices = np.linspace(0, len(ordered_pts) - 1, n_points, dtype=int)
         ordered_pts = ordered_pts[indices]
@@ -155,9 +201,7 @@ def extract_centerline_from_mask(mask_xy: np.ndarray, img_w: int, img_h: int, n_
 
 
 def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: int) -> list:
-    """Fallback : centroïde par tranche pour estimer la ligne centrale."""
     points = []
-    # Déterminer si le câble est plutôt vertical ou horizontal
     ys, xs = np.where(mask_img > 0)
     if len(xs) == 0:
         return []
@@ -165,7 +209,6 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
     span_y = ys.max() - ys.min()
 
     if span_y >= span_x:
-        # Câble vertical : tranches horizontales
         y_min, y_max = int(ys.min()), int(ys.max())
         for i in range(n_points):
             y = int(y_min + (y_max - y_min) * i / (n_points - 1))
@@ -174,7 +217,6 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
                 x = float(row.mean())
                 points.append({"x": x, "y": float(y)})
     else:
-        # Câble horizontal : tranches verticales
         x_min, x_max = int(xs.min()), int(xs.max())
         for i in range(n_points):
             x = int(x_min + (x_max - x_min) * i / (n_points - 1))
@@ -332,16 +374,14 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
             return {"found": False, "points": [], "message": "Aucun objet détecté"}
 
         best_idx = int(result.boxes.conf.argmax())
-        mask_xy = result.masks.xy[best_idx]  # contour du masque en pixels
+        mask_xy = result.masks.xy[best_idx]
 
         img_w = result.orig_shape[1]
         img_h = result.orig_shape[0]
 
-        # Extraire la ligne centrale depuis le masque
         points = extract_centerline_from_mask(mask_xy, img_w, img_h, n_points=40)
 
         if not points:
-            # Fallback : retourner le contour brut si squelette vide
             points = [{"x": float(pt[0]), "y": float(pt[1])} for pt in mask_xy]
 
         conf_val = float(result.boxes.conf[best_idx])
@@ -451,24 +491,45 @@ async def save_annotation(name: str, stem: str, data: dict):
     ann_dir.mkdir(exist_ok=True)
     ann_path = ann_dir / f"{stem}.json"
     data["saved_at"] = datetime.now().isoformat()
-    with open(ann_path, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    points = data.get("points", [])
-    img_width = data.get("image_width", 1)
+
+    points     = data.get("points", [])
+    img_width  = data.get("image_width", 1)
     img_height = data.get("image_height", 1)
-    mode = data.get("annotation_mode", "centerline")
-    if mode == "contour" and "left_points" in data and "right_points" in data:
-        left = data["left_points"]
+    mode       = data.get("annotation_mode", "centerline")
+
+    # ── Mode keypoints : 2 points → calcul theta + label YOLOv8-pose ──────────
+    if mode == "keypoints" and len(points) == 2:
+        pt_ancrage = points[0]   # CLIC 1 : ancrage (bas câble)
+        pt_bouee   = points[1]   # CLIC 2 : bas de la bouée
+        theta = compute_theta(pt_ancrage, pt_bouee)
+        data["theta_deg"]          = round(theta, 3)
+        data["keypoint_ancrage"]   = {"x": pt_ancrage["x"], "y": pt_ancrage["y"]}
+        data["keypoint_bas_bouee"] = {"x": pt_bouee["x"],   "y": pt_bouee["y"]}
+        write_yolo_pose_label(name, stem, pt_ancrage, pt_bouee, img_width, img_height)
+
+    # ── Mode contour ───────────────────────────────────────────────────────────
+    elif mode == "contour" and "left_points" in data and "right_points" in data:
+        left  = data["left_points"]
         right = list(reversed(data["right_points"]))
         write_yolo_label(name, stem, left + right, img_width, img_height)
+
+    # ── Mode centerline (défaut) ───────────────────────────────────────────────
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
+
+    with open(ann_path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
             break
     save_session_meta(name, meta)
-    return {"message": "Annotation saved", "stem": stem}
+    return {
+        "message":   "Annotation saved",
+        "stem":      stem,
+        "theta_deg": data.get("theta_deg"),
+    }
 
 @app.post("/api/sessions/{name}/images/{filename}/ignore")
 async def ignore_image(name: str, filename: str):
@@ -524,52 +585,127 @@ async def export_download(name: str):
     annotated = [img for img in meta["images"] if img.get("status") == "annotated"]
     if not annotated:
         raise HTTPException(status_code=400, detail="No annotated images to export")
+
+    # Détection automatique du mode dominant dans la session
+    mode_counts = {"keypoints": 0, "centerline": 0, "contour": 0}
+    for img in annotated:
+        stem = Path(img["filename"]).stem
+        ann_path = session_dir / "annotations" / f"{stem}.json"
+        if ann_path.exists():
+            with open(ann_path, "r") as f:
+                ann = json.load(f)
+            m = ann.get("annotation_mode", "centerline")
+            mode_counts[m] = mode_counts.get(m, 0) + 1
+    dominant_mode = max(mode_counts, key=mode_counts.get)
+    is_pose_mode = dominant_mode == "keypoints"
+
     random.seed(42)
     shuffled = annotated.copy()
     random.shuffle(shuffled)
     split_idx = int(len(shuffled) * 0.8)
     train_imgs = shuffled[:split_idx] if split_idx > 0 else shuffled
-    val_imgs = shuffled[split_idx:] if split_idx < len(shuffled) else []
+    val_imgs   = shuffled[split_idx:] if split_idx < len(shuffled) else []
     if not train_imgs and val_imgs:
         train_imgs = [val_imgs.pop(0)]
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
+        # dataset.yaml — adapté au mode
+        if is_pose_mode:
+            yaml_content = (
+                "path: .\ntrain: images/train\nval: images/val\n"
+                "kc: 2\nflip_idx: []\n"
+                "names:\n  0: cable\n"
+            )
+            train_model = "yolov8n-pose.pt"
+        else:
+            yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
+            train_model = "yolov8n-seg.pt"
+
         zf.writestr("dataset/dataset.yaml", yaml_content)
-        train_script = 'from ultralytics import YOLO\nimport os\n\nos.chdir(os.path.dirname(os.path.abspath(__file__)))\n\nmodel = YOLO("yolov8n-seg.pt")\nmodel.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")\n'
+
+        train_script = (
+            f'from ultralytics import YOLO\nimport os\n\n'
+            f'os.chdir(os.path.dirname(os.path.abspath(__file__)))\n\n'
+            f'model = YOLO("{train_model}")\n'
+            f'model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")\n'
+        )
         zf.writestr("dataset/train_yolo.py", train_script)
+
+        # Colonnes CSV enrichies avec theta_deg
+        csv_header = [
+            "filename", "split", "annotation_mode", "theta_deg",
+            "annotator_name", "current_speed_cm_s", "current_direction",
+            "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s",
+            "camera_angle", "water_turbidity", "lighting_condition",
+            "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm",
+            "notes", "num_points",
+        ]
         csv_rows = []
-        csv_header = ["filename", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
+
         def add_images(images, split_name):
             for img in images:
-                filename = img["filename"]
-                stem = Path(filename).stem
-                img_path = session_dir / "images" / filename
+                filename  = img["filename"]
+                stem      = Path(filename).stem
+                img_path  = session_dir / "images" / filename
                 if img_path.exists():
                     zf.write(img_path, f"dataset/images/{split_name}/{filename}")
                 label_path = session_dir / "labels" / f"{stem}.txt"
                 if label_path.exists():
                     zf.write(label_path, f"dataset/labels/{split_name}/{stem}.txt")
-                ann_path = session_dir / "annotations" / f"{stem}.json"
+                ann_path   = session_dir / "annotations" / f"{stem}.json"
                 conditions = {}
                 num_points = 0
+                theta_deg  = ""
+                ann_mode   = "centerline"
                 if ann_path.exists():
                     with open(ann_path, "r") as f:
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
                     num_points = len(ann.get("points", []))
-                    zf.writestr(f"dataset/metadata/{stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
-                csv_rows.append({"filename": filename, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
+                    theta_deg  = ann.get("theta_deg", "")
+                    ann_mode   = ann.get("annotation_mode", "centerline")
+                    zf.writestr(
+                        f"dataset/metadata/{stem}_meta.json",
+                        json.dumps(ann, indent=2, ensure_ascii=False)
+                    )
+                csv_rows.append({
+                    "filename":           filename,
+                    "split":              split_name,
+                    "annotation_mode":    ann_mode,
+                    "theta_deg":          theta_deg,
+                    "annotator_name":     conditions.get("annotator_name", ""),
+                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
+                    "current_direction":  conditions.get("current_direction", ""),
+                    "wave_amplitude_cm":  conditions.get("wave_amplitude_cm", ""),
+                    "wave_frequency_hz":  conditions.get("wave_frequency_hz", ""),
+                    "wind_speed_m_s":     conditions.get("wind_speed_m_s", ""),
+                    "camera_angle":       conditions.get("camera_angle", ""),
+                    "water_turbidity":    conditions.get("water_turbidity", ""),
+                    "lighting_condition": conditions.get("lighting_condition", ""),
+                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
+                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
+                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
+                    "notes":              conditions.get("notes", ""),
+                    "num_points":         num_points,
+                })
+
         add_images(train_imgs, "train")
-        add_images(val_imgs, "val")
+        add_images(val_imgs,   "val")
+
         csv_buf = io.StringIO()
-        writer = csv.DictWriter(csv_buf, fieldnames=csv_header)
+        writer  = csv.DictWriter(csv_buf, fieldnames=csv_header)
         writer.writeheader()
         for row in csv_rows:
             writer.writerow(row)
         zf.writestr("dataset/dataset_summary.csv", csv_buf.getvalue())
+
     buf.seek(0)
-    return StreamingResponse(buf, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_{name}.zip"})
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_{name}.zip"}
+    )
 
 
 # ─── Export fusionné (toutes sessions) ────────────────────────────────────────
@@ -581,10 +717,10 @@ async def merged_export_stats():
     for d in sorted(DATA_DIR.iterdir()):
         if d.is_dir() and (d / "session.json").exists():
             meta = load_session_meta(d.name)
-            total_images += len(meta["images"])
-            total_annotated += sum(1 for img in meta["images"] if img.get("status") == "annotated")
+            total_images     += len(meta["images"])
+            total_annotated  += sum(1 for img in meta["images"] if img.get("status") == "annotated")
     train_count = int(total_annotated * 0.8)
-    val_count = total_annotated - train_count
+    val_count   = total_annotated - train_count
     return {"total_annotated": total_annotated, "total_images": total_images, "train_count": train_count, "val_count": val_count}
 
 @app.get("/api/export/merged/download")
@@ -599,54 +735,99 @@ async def export_merged_download():
     if not all_annotated:
         raise HTTPException(status_code=400, detail="Aucune image annotée trouvée")
     random.seed(42)
-    shuffled = all_annotated.copy()
+    shuffled   = all_annotated.copy()
     random.shuffle(shuffled)
-    split_idx = max(1, int(len(shuffled) * 0.8))
+    split_idx  = max(1, int(len(shuffled) * 0.8))
     train_items = shuffled[:split_idx]
-    val_items = shuffled[split_idx:] if split_idx < len(shuffled) else []
+    val_items   = shuffled[split_idx:] if split_idx < len(shuffled) else []
     buf = io.BytesIO()
     csv_rows = []
-    csv_header = ["filename", "session", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
+    csv_header = [
+        "filename", "session", "split", "annotation_mode", "theta_deg",
+        "annotator_name", "current_speed_cm_s", "current_direction",
+        "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s",
+        "camera_angle", "water_turbidity", "lighting_condition",
+        "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm",
+        "notes", "num_points",
+    ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
         zf.writestr("dataset/dataset.yaml", yaml_content)
-        train_script = 'from ultralytics import YOLO\nimport os\n\nos.chdir(os.path.dirname(os.path.abspath(__file__)))\n\nmodel = YOLO("yolov8n-seg.pt")\nmodel.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run_merged")\n'
+        train_script = (
+            'from ultralytics import YOLO\nimport os\n\n'
+            'os.chdir(os.path.dirname(os.path.abspath(__file__)))\n\n'
+            'model = YOLO("yolov8n-seg.pt")\n'
+            'model.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run_merged")\n'
+        )
         zf.writestr("dataset/train_yolo.py", train_script)
+
         def add_merged_items(items, split_name):
             for session_name, img in items:
-                session_dir = get_session_dir(session_name)
-                filename = img["filename"]
-                stem = Path(filename).stem
-                ext = Path(filename).suffix
-                unique_stem = f"{session_name}_{stem}"
+                session_dir     = get_session_dir(session_name)
+                filename        = img["filename"]
+                stem            = Path(filename).stem
+                ext             = Path(filename).suffix
+                unique_stem     = f"{session_name}_{stem}"
                 unique_filename = f"{unique_stem}{ext}"
-                img_path = session_dir / "images" / filename
+                img_path        = session_dir / "images" / filename
                 if img_path.exists():
                     zf.write(img_path, f"dataset/images/{split_name}/{unique_filename}")
                 label_path = session_dir / "labels" / f"{stem}.txt"
                 if label_path.exists():
                     zf.write(label_path, f"dataset/labels/{split_name}/{unique_stem}.txt")
-                ann_path = session_dir / "annotations" / f"{stem}.json"
+                ann_path   = session_dir / "annotations" / f"{stem}.json"
                 conditions = {}
                 num_points = 0
+                theta_deg  = ""
+                ann_mode   = "centerline"
                 if ann_path.exists():
                     with open(ann_path, "r") as f:
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
                     num_points = len(ann.get("points", []))
-                    zf.writestr(f"dataset/metadata/{unique_stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
-                csv_rows.append({"filename": unique_filename, "session": session_name, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
+                    theta_deg  = ann.get("theta_deg", "")
+                    ann_mode   = ann.get("annotation_mode", "centerline")
+                    zf.writestr(
+                        f"dataset/metadata/{unique_stem}_meta.json",
+                        json.dumps(ann, indent=2, ensure_ascii=False)
+                    )
+                csv_rows.append({
+                    "filename":           unique_filename,
+                    "session":            session_name,
+                    "split":              split_name,
+                    "annotation_mode":    ann_mode,
+                    "theta_deg":          theta_deg,
+                    "annotator_name":     conditions.get("annotator_name", ""),
+                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
+                    "current_direction":  conditions.get("current_direction", ""),
+                    "wave_amplitude_cm":  conditions.get("wave_amplitude_cm", ""),
+                    "wave_frequency_hz":  conditions.get("wave_frequency_hz", ""),
+                    "wind_speed_m_s":     conditions.get("wind_speed_m_s", ""),
+                    "camera_angle":       conditions.get("camera_angle", ""),
+                    "water_turbidity":    conditions.get("water_turbidity", ""),
+                    "lighting_condition": conditions.get("lighting_condition", ""),
+                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
+                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
+                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
+                    "notes":              conditions.get("notes", ""),
+                    "num_points":         num_points,
+                })
+
         add_merged_items(train_items, "train")
-        add_merged_items(val_items, "val")
+        add_merged_items(val_items,   "val")
         csv_buf = io.StringIO()
-        writer = csv.DictWriter(csv_buf, fieldnames=csv_header)
+        writer  = csv.DictWriter(csv_buf, fieldnames=csv_header)
         writer.writeheader()
         for row in csv_rows:
             writer.writerow(row)
         zf.writestr("dataset/dataset_summary.csv", csv_buf.getvalue())
     buf.seek(0)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return StreamingResponse(buf, media_type="application/zip", headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_merged_{timestamp}.zip"})
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=cosmer_dataset_merged_{timestamp}.zip"}
+    )
 
 
 # ─── Statistics ────────────────────────────────────────────────────────────────
@@ -655,23 +836,31 @@ async def export_merged_download():
 async def get_statistics(name: str):
     meta = load_session_meta(name)
     session_dir = get_session_dir(name)
-    total = len(meta["images"])
-    annotated = sum(1 for img in meta["images"] if img.get("status") == "annotated")
-    ignored = sum(1 for img in meta["images"] if img.get("status") == "ignored")
-    remaining = total - annotated - ignored
-    speeds = []; camera_angles = {}; current_directions = {}; wave_data = []; point_counts = []; annotators = {}; condition_counts = {}
+    total      = len(meta["images"])
+    annotated  = sum(1 for img in meta["images"] if img.get("status") == "annotated")
+    ignored    = sum(1 for img in meta["images"] if img.get("status") == "ignored")
+    remaining  = total - annotated - ignored
+    speeds = []; camera_angles = {}; current_directions = {}
+    wave_data = []; point_counts = []; annotators = {}; condition_counts = {}
+    thetas = []
     for img in meta["images"]:
         if img.get("status") != "annotated":
             continue
-        stem = Path(img["filename"]).stem
+        stem     = Path(img["filename"]).stem
         ann_path = session_dir / "annotations" / f"{stem}.json"
         if not ann_path.exists():
             continue
         with open(ann_path, "r") as f:
             ann = json.load(f)
-        conditions = ann.get("conditions", {})
-        points = ann.get("points", [])
+        conditions  = ann.get("conditions", {})
+        points      = ann.get("points", [])
+        theta_deg   = ann.get("theta_deg")
         point_counts.append(len(points))
+        if theta_deg is not None and theta_deg != "":
+            try:
+                thetas.append(float(theta_deg))
+            except (ValueError, TypeError):
+                pass
         speed = conditions.get("current_speed_cm_s")
         if speed is not None and speed != "":
             try: speeds.append(float(speed))
@@ -684,7 +873,7 @@ async def get_statistics(name: str):
         if direction and direction != "—":
             current_directions[direction] = current_directions.get(direction, 0) + 1
             condition_counts[f"current_direction:{direction}"] = condition_counts.get(f"current_direction:{direction}", 0) + 1
-        wave_amp = conditions.get("wave_amplitude_cm")
+        wave_amp   = conditions.get("wave_amplitude_cm")
         wave_speed = conditions.get("current_speed_cm_s")
         if wave_amp is not None and wave_speed is not None:
             try: wave_data.append({"amplitude": float(wave_amp), "speed": float(wave_speed)})
@@ -699,11 +888,23 @@ async def get_statistics(name: str):
         if n_bins > 0 and max_s > min_s:
             bin_width = (max_s - min_s) / n_bins
             for i in range(n_bins):
-                lo = min_s + i * bin_width
-                hi = lo + bin_width
+                lo    = min_s + i * bin_width
+                hi    = lo + bin_width
                 count = sum(1 for s in speeds if lo <= s < hi or (i == n_bins - 1 and s == hi))
                 speed_histogram.append({"range": f"{lo:.1f}-{hi:.1f}", "count": count})
-    return {"total": total, "annotated": annotated, "ignored": ignored, "remaining": remaining, "speed_histogram": speed_histogram, "camera_angles": [{"name": k, "value": v} for k, v in camera_angles.items()], "current_directions": [{"name": k, "value": v} for k, v in current_directions.items()], "wave_scatter": wave_data, "avg_points": round(sum(point_counts) / len(point_counts), 1) if point_counts else 0, "point_counts": point_counts, "annotators": [{"name": k, "count": v} for k, v in annotators.items()], "balance_warnings": balance_warnings}
+    return {
+        "total": total, "annotated": annotated, "ignored": ignored, "remaining": remaining,
+        "speed_histogram":    speed_histogram,
+        "camera_angles":      [{"name": k, "value": v} for k, v in camera_angles.items()],
+        "current_directions": [{"name": k, "value": v} for k, v in current_directions.items()],
+        "wave_scatter":       wave_data,
+        "avg_points":         round(sum(point_counts) / len(point_counts), 1) if point_counts else 0,
+        "point_counts":       point_counts,
+        "annotators":         [{"name": k, "count": v} for k, v in annotators.items()],
+        "balance_warnings":   balance_warnings,
+        "theta_values":       thetas,
+        "avg_theta":          round(sum(thetas) / len(thetas), 2) if thetas else None,
+    }
 
 
 if __name__ == "__main__":
