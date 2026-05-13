@@ -8,6 +8,7 @@ import re
 import json
 import csv
 import io
+import math
 import shutil
 import zipfile
 import random
@@ -106,6 +107,87 @@ def write_yolo_label(session_name: str, stem: str, points: list, img_width: int,
     line = "0 " + " ".join(normalized) + "\n"
     with open(label_path, "w") as f:
         f.write(line)
+
+
+# ─── Calcul d'angle du câble ──────────────────────────────────────────────────
+
+def calc_cable_angle(points: list) -> dict:
+    """
+    Calcule l'angle θ du câble par rapport à la verticale à partir d'une polyligne.
+
+    Convention : θ = 0° quand le câble est parfaitement vertical (pas de courant),
+                 θ augmente quand le câble s'incline sous l'effet du courant.
+                 Plage attendue : 0° à ~40° pour Vc entre 5 et 30 cm/s.
+
+    Méthode principale : Régression linéaire (moindres carrés) sur tous les points.
+    - Donne l'orientation moyenne globale du câble, robuste au bruit de tracé.
+    - Si câble droit → identique à la corde 2 points.
+    - Si câble courbé → meilleur estimateur de l'angle "équivalent tige rigide".
+    - Directement réutilisable sur des segments d'un câble long (futur travail en mer).
+
+    Retourne aussi :
+    - cable_angle_chord_deg : angle corde (point 1 → point N), pour comparaison.
+    - cable_curvature_index : écart entre les deux angles, indicateur de courbure.
+    """
+    result = {
+        "cable_angle_deg": "",
+        "cable_angle_chord_deg": "",
+        "cable_curvature_index": "",
+    }
+
+    if not points or len(points) < 2:
+        return result
+
+    xs = np.array([float(p["x"]) for p in points])
+    ys = np.array([float(p["y"]) for p in points])
+
+    # ── Angle par régression linéaire (méthode principale) ──
+    # On cherche la direction principale par PCA (robuste aux câbles quasi-verticaux
+    # ET quasi-horizontaux, contrairement à polyfit qui diverge si câble vertical).
+    coords = np.stack([xs, ys], axis=1)
+    mean = coords.mean(axis=0)
+    centered = coords - mean
+    # Matrice de covariance 2×2
+    cov = np.cov(centered.T)
+    if cov.ndim < 2:
+        # Cas dégénéré : tous les points alignés sur une droite parfaite
+        cov = np.array([[float(cov), 0.0], [0.0, 0.0]])
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    # Vecteur directeur de la droite de régression (direction de variance maximale)
+    principal = eigenvectors[:, np.argmax(eigenvalues)]  # [dx, dy] en coords pixels
+    dx_reg = float(principal[0])
+    dy_reg = float(principal[1])
+
+    # Assurer que dy pointe vers le bas (ancrage en bas de l'image = y croissant)
+    # Si le premier point est en haut (y petit) et le dernier en bas (y grand),
+    # on oriente dy positif vers le bas pour que l'angle soit mesuré correctement.
+    if (ys[-1] - ys[0]) < 0:
+        dy_reg = -dy_reg
+        dx_reg = -dx_reg
+
+    # θ = angle entre la direction du câble et la verticale descendante (dy > 0)
+    # atan2(|dx|, dy) → 0° si vertical, 90° si horizontal
+    angle_reg = math.degrees(math.atan2(abs(dx_reg), abs(dy_reg)))
+    result["cable_angle_deg"] = round(angle_reg, 3)
+
+    # ── Angle corde (point 1 → point N) ──
+    dx_chord = float(xs[-1] - xs[0])
+    dy_chord = float(ys[0] - ys[-1])  # inversé car Y pixel croît vers le bas
+    # Si les deux extrémités sont confondues, fallback sur régression
+    if abs(dx_chord) < 1e-6 and abs(dy_chord) < 1e-6:
+        result["cable_angle_chord_deg"] = result["cable_angle_deg"]
+    else:
+        angle_chord = math.degrees(math.atan2(abs(dx_chord), abs(dy_chord)))
+        result["cable_angle_chord_deg"] = round(angle_chord, 3)
+
+    # ── Indice de courbure ──
+    try:
+        curvature = round(abs(float(result["cable_angle_deg"]) - float(result["cable_angle_chord_deg"])), 3)
+        result["cable_curvature_index"] = curvature
+    except (TypeError, ValueError):
+        result["cable_curvature_index"] = ""
+
+    return result
 
 
 def extract_centerline_from_mask(mask_xy: np.ndarray, img_w: int, img_h: int, n_points: int = 40) -> list:
@@ -450,10 +532,19 @@ async def save_annotation(name: str, stem: str, data: dict):
     ann_dir = session_dir / "annotations"
     ann_dir.mkdir(exist_ok=True)
     ann_path = ann_dir / f"{stem}.json"
+
+    # Calcul automatique de l'angle au moment de la sauvegarde
+    points = data.get("points", [])
+    if points and len(points) >= 2:
+        angle_data = calc_cable_angle(points)
+        data["cable_angle_deg"] = angle_data["cable_angle_deg"]
+        data["cable_angle_chord_deg"] = angle_data["cable_angle_chord_deg"]
+        data["cable_curvature_index"] = angle_data["cable_curvature_index"]
+
     data["saved_at"] = datetime.now().isoformat()
     with open(ann_path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    points = data.get("points", [])
+
     img_width = data.get("image_width", 1)
     img_height = data.get("image_height", 1)
     mode = data.get("annotation_mode", "centerline")
@@ -463,6 +554,7 @@ async def save_annotation(name: str, stem: str, data: dict):
         write_yolo_label(name, stem, left + right, img_width, img_height)
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
+
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
@@ -539,7 +631,15 @@ async def export_download(name: str):
         train_script = 'from ultralytics import YOLO\nimport os\n\nos.chdir(os.path.dirname(os.path.abspath(__file__)))\n\nmodel = YOLO("yolov8n-seg.pt")\nmodel.train(data="dataset.yaml", epochs=100, imgsz=640, batch=8, name="cosmer_run")\n'
         zf.writestr("dataset/train_yolo.py", train_script)
         csv_rows = []
-        csv_header = ["filename", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
+        csv_header = [
+            "filename", "split",
+            "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
+            "current_speed_cm_s", "annotator_name", "current_direction",
+            "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s",
+            "camera_angle", "water_turbidity", "lighting_condition",
+            "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm",
+            "notes", "num_points"
+        ]
         def add_images(images, split_name):
             for img in images:
                 filename = img["filename"]
@@ -553,13 +653,47 @@ async def export_download(name: str):
                 ann_path = session_dir / "annotations" / f"{stem}.json"
                 conditions = {}
                 num_points = 0
+                cable_angle_deg = ""
+                cable_angle_chord_deg = ""
+                cable_curvature_index = ""
                 if ann_path.exists():
                     with open(ann_path, "r") as f:
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
-                    num_points = len(ann.get("points", []))
+                    pts = ann.get("points", [])
+                    num_points = len(pts)
+                    # Récupère l'angle stocké, ou le recalcule à la volée pour les anciennes annotations
+                    if "cable_angle_deg" in ann and ann["cable_angle_deg"] != "":
+                        cable_angle_deg = ann["cable_angle_deg"]
+                        cable_angle_chord_deg = ann.get("cable_angle_chord_deg", "")
+                        cable_curvature_index = ann.get("cable_curvature_index", "")
+                    elif pts and len(pts) >= 2:
+                        angle_data = calc_cable_angle(pts)
+                        cable_angle_deg = angle_data["cable_angle_deg"]
+                        cable_angle_chord_deg = angle_data["cable_angle_chord_deg"]
+                        cable_curvature_index = angle_data["cable_curvature_index"]
                     zf.writestr(f"dataset/metadata/{stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
-                csv_rows.append({"filename": filename, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
+                csv_rows.append({
+                    "filename": filename,
+                    "split": split_name,
+                    "cable_angle_deg": cable_angle_deg,
+                    "cable_angle_chord_deg": cable_angle_chord_deg,
+                    "cable_curvature_index": cable_curvature_index,
+                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
+                    "annotator_name": conditions.get("annotator_name", ""),
+                    "current_direction": conditions.get("current_direction", ""),
+                    "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""),
+                    "wave_frequency_hz": conditions.get("wave_frequency_hz", ""),
+                    "wind_speed_m_s": conditions.get("wind_speed_m_s", ""),
+                    "camera_angle": conditions.get("camera_angle", ""),
+                    "water_turbidity": conditions.get("water_turbidity", ""),
+                    "lighting_condition": conditions.get("lighting_condition", ""),
+                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
+                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
+                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
+                    "notes": conditions.get("notes", ""),
+                    "num_points": num_points,
+                })
         add_images(train_imgs, "train")
         add_images(val_imgs, "val")
         csv_buf = io.StringIO()
@@ -606,7 +740,15 @@ async def export_merged_download():
     val_items = shuffled[split_idx:] if split_idx < len(shuffled) else []
     buf = io.BytesIO()
     csv_rows = []
-    csv_header = ["filename", "session", "split", "annotator_name", "current_speed_cm_s", "current_direction", "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s", "camera_angle", "water_turbidity", "lighting_condition", "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm", "notes", "num_points"]
+    csv_header = [
+        "filename", "session", "split",
+        "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
+        "current_speed_cm_s", "annotator_name", "current_direction",
+        "wave_amplitude_cm", "wave_frequency_hz", "wind_speed_m_s",
+        "camera_angle", "water_turbidity", "lighting_condition",
+        "immersed_length_cm", "buoy_to_surface_cm", "canal_water_depth_cm",
+        "notes", "num_points"
+    ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         yaml_content = "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['mooring_line']\n"
         zf.writestr("dataset/dataset.yaml", yaml_content)
@@ -629,13 +771,48 @@ async def export_merged_download():
                 ann_path = session_dir / "annotations" / f"{stem}.json"
                 conditions = {}
                 num_points = 0
+                cable_angle_deg = ""
+                cable_angle_chord_deg = ""
+                cable_curvature_index = ""
                 if ann_path.exists():
                     with open(ann_path, "r") as f:
                         ann = json.load(f)
                     conditions = ann.get("conditions", {})
-                    num_points = len(ann.get("points", []))
+                    pts = ann.get("points", [])
+                    num_points = len(pts)
+                    # Récupère l'angle stocké, ou le recalcule à la volée pour les anciennes annotations
+                    if "cable_angle_deg" in ann and ann["cable_angle_deg"] != "":
+                        cable_angle_deg = ann["cable_angle_deg"]
+                        cable_angle_chord_deg = ann.get("cable_angle_chord_deg", "")
+                        cable_curvature_index = ann.get("cable_curvature_index", "")
+                    elif pts and len(pts) >= 2:
+                        angle_data = calc_cable_angle(pts)
+                        cable_angle_deg = angle_data["cable_angle_deg"]
+                        cable_angle_chord_deg = angle_data["cable_angle_chord_deg"]
+                        cable_curvature_index = angle_data["cable_curvature_index"]
                     zf.writestr(f"dataset/metadata/{unique_stem}_meta.json", json.dumps(ann, indent=2, ensure_ascii=False))
-                csv_rows.append({"filename": unique_filename, "session": session_name, "split": split_name, "annotator_name": conditions.get("annotator_name", ""), "current_speed_cm_s": conditions.get("current_speed_cm_s", ""), "current_direction": conditions.get("current_direction", ""), "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""), "wave_frequency_hz": conditions.get("wave_frequency_hz", ""), "wind_speed_m_s": conditions.get("wind_speed_m_s", ""), "camera_angle": conditions.get("camera_angle", ""), "water_turbidity": conditions.get("water_turbidity", ""), "lighting_condition": conditions.get("lighting_condition", ""), "immersed_length_cm": conditions.get("immersed_length_cm", ""), "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""), "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""), "notes": conditions.get("notes", ""), "num_points": num_points})
+                csv_rows.append({
+                    "filename": unique_filename,
+                    "session": session_name,
+                    "split": split_name,
+                    "cable_angle_deg": cable_angle_deg,
+                    "cable_angle_chord_deg": cable_angle_chord_deg,
+                    "cable_curvature_index": cable_curvature_index,
+                    "current_speed_cm_s": conditions.get("current_speed_cm_s", ""),
+                    "annotator_name": conditions.get("annotator_name", ""),
+                    "current_direction": conditions.get("current_direction", ""),
+                    "wave_amplitude_cm": conditions.get("wave_amplitude_cm", ""),
+                    "wave_frequency_hz": conditions.get("wave_frequency_hz", ""),
+                    "wind_speed_m_s": conditions.get("wind_speed_m_s", ""),
+                    "camera_angle": conditions.get("camera_angle", ""),
+                    "water_turbidity": conditions.get("water_turbidity", ""),
+                    "lighting_condition": conditions.get("lighting_condition", ""),
+                    "immersed_length_cm": conditions.get("immersed_length_cm", ""),
+                    "buoy_to_surface_cm": conditions.get("buoy_to_surface_cm", ""),
+                    "canal_water_depth_cm": conditions.get("canal_water_depth_cm", ""),
+                    "notes": conditions.get("notes", ""),
+                    "num_points": num_points,
+                })
         add_merged_items(train_items, "train")
         add_merged_items(val_items, "val")
         csv_buf = io.StringIO()
