@@ -674,7 +674,6 @@ names: ['cable']
                 if ann_path.exists():
                     with open(ann_path) as af:
                         ann = json.load(af)
-                    # Champs plats + champs depuis conditions
                     flat = {k: v for k, v in ann.items() if k != "conditions"}
                     row.update(flat)
                     conditions = ann.get("conditions", {})
@@ -1062,6 +1061,45 @@ async def train_global(
 @app.get("/api/train/global/progress")
 async def get_global_train_progress():
     return GLOBAL_TRAIN_PROGRESS.get("global", {"epoch": 0, "total_epochs": 0, "status": "idle"})
+
+
+@app.get("/api/train/global/angle-vc-data")
+async def get_angle_vc_data():
+    """
+    Retourne la liste de {theta, vc} pour toutes les annotations de toutes les sessions.
+    Utilisé pour le graphique Vc = f(θ) avec droite de régression.
+    """
+    result = []
+    if not DATA_DIR.exists():
+        return result
+    for d in sorted(DATA_DIR.iterdir()):
+        if not d.is_dir() or not (d / "session.json").exists():
+            continue
+        try:
+            meta = load_session_meta(d.name)
+        except Exception:
+            continue
+        ann_dir = d / "annotations"
+        for img in meta["images"]:
+            if img["status"] != "annotated":
+                continue
+            stem = Path(img["filename"]).stem
+            ann_path = ann_dir / f"{stem}.json"
+            if not ann_path.exists():
+                continue
+            try:
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                theta_raw = ann.get("cable_angle_deg")
+                vc_raw = ann_get(ann, "current_speed_cm_s")
+                if theta_raw in ("", None) or vc_raw in ("", None):
+                    continue
+                theta = float(theta_raw)
+                vc = float(vc_raw)
+                result.append({"theta": round(theta, 3), "vc": round(vc, 3)})
+            except (ValueError, TypeError, KeyError):
+                continue
+    return result
 
 
 # ─── Models ────────────────────────────────────────────────────────────────────────────────
