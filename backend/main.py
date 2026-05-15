@@ -193,6 +193,94 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
     return points
 
 
+# ─── Uniformisation des points (équidistance + nombre fixe) ──────────────────────────
+# Appelée automatiquement à chaque validation d'annotation.
+#
+# Algorithme :
+#   1. Calcule la longueur curviligne totale de la polyligne.
+#   2. Rééchantillonne par interpolation linéaire en N points équidistants.
+#   3. N = min(nb_points_actuelle_anno, N_session) où N_session est
+#      le minimum observé dans toutes les annotations déjà sauvegardées.
+#      → Toutes les annotations de la session finiront avec le même N.
+
+def _resample_equidistant(points: list, n: int) -> list:
+    """Rééchantillonne une polyligne en n points équidistants (interpolation linéaire)."""
+    if len(points) < 2 or n < 2:
+        return points
+    coords = np.array([[p["x"], p["y"]] for p in points], dtype=float)
+    # Distances cumulées
+    diffs = np.diff(coords, axis=0)
+    seg_lengths = np.sqrt((diffs ** 2).sum(axis=1))
+    cum = np.concatenate([[0.0], np.cumsum(seg_lengths)])
+    total = cum[-1]
+    if total < 1e-9:
+        return points
+    target = np.linspace(0.0, total, n)
+    new_x = np.interp(target, cum, coords[:, 0])
+    new_y = np.interp(target, cum, coords[:, 1])
+    return [{"x": float(x), "y": float(y)} for x, y in zip(new_x, new_y)]
+
+
+def _get_session_target_n(session_name: str, current_n: int, default_n: int = 40) -> int:
+    """
+    Retourne le N cible pour la session :
+      - Collecte le nombre de points de toutes les annotations déjà sauvegardées.
+      - Prend le minimum entre ces valeurs ET current_n.
+      - Si aucune annotation existante, retourne min(current_n, default_n).
+    """
+    ann_dir = get_session_dir(session_name) / "annotations"
+    if not ann_dir.exists():
+        return min(current_n, default_n)
+    existing_counts = []
+    for ann_file in ann_dir.glob("*.json"):
+        try:
+            with open(ann_file) as f:
+                ann = json.load(f)
+            pts = ann.get("points", [])
+            if len(pts) >= 2:
+                existing_counts.append(len(pts))
+        except Exception:
+            pass
+    if not existing_counts:
+        return min(current_n, default_n)
+    target = min(min(existing_counts), current_n)
+    return max(target, 2)  # au moins 2 points
+
+
+def _retroactively_resample_session(session_name: str, target_n: int):
+    """
+    Rééchantillonne toutes les annotations existantes de la session
+    si leur nombre de points diffère de target_n.
+    Appelé uniquement quand target_n diminue (nouvelle annotation avec moins de points).
+    Met aussi à jour les labels YOLO et recalcule les angles.
+    """
+    ann_dir = get_session_dir(session_name) / "annotations"
+    if not ann_dir.exists():
+        return
+    for ann_file in ann_dir.glob("*.json"):
+        try:
+            with open(ann_file) as f:
+                ann = json.load(f)
+            pts = ann.get("points", [])
+            if len(pts) == target_n or len(pts) < 2:
+                continue
+            new_pts = _resample_equidistant(pts, target_n)
+            ann["points"] = new_pts
+            ann["n_points_normalized"] = target_n
+            # Recalcul angles
+            angle_data = calc_cable_angle(new_pts)
+            ann.update(angle_data)
+            with open(ann_file, "w") as f:
+                json.dump(ann, f, indent=2, ensure_ascii=False)
+            # Mise à jour du label YOLO
+            stem = ann_file.stem
+            img_w = ann.get("image_width", 1)
+            img_h = ann.get("image_height", 1)
+            write_yolo_label(session_name, stem, new_pts, img_w, img_h)
+        except Exception as e:
+            print(f"[RESAMPLE] Erreur sur {ann_file.name}: {e}")
+
+
 # ─── PyTorch helper ───────────────────────────────────────────────────────────────────
 def get_torch_modules():
     try:
@@ -458,17 +546,37 @@ async def save_annotation(name: str, stem: str, data: dict):
     ann_dir = session_dir / "annotations"
     ann_dir.mkdir(exist_ok=True)
     ann_path = ann_dir / f"{stem}.json"
+
     points = data.get("points", [])
+    img_width = data.get("image_width", 1)
+    img_height = data.get("image_height", 1)
+
+    # ── Uniformisation : rééchantillonnage équidistant ──────────────────────────
+    if points and len(points) >= 2:
+        # 1. Déterminer N cible pour la session
+        target_n = _get_session_target_n(name, len(points))
+
+        # 2. Rééchantillonner les points entrants
+        points = _resample_equidistant(points, target_n)
+        data["points"] = points
+        data["n_points_normalized"] = target_n
+
+        # 3. Si target_n < N des annotations existantes, les réaligner rétroactivement
+        _retroactively_resample_session(name, target_n)
+
+    # ── Calcul des angles ────────────────────────────────────────────────────────
     if points and len(points) >= 2:
         angle_data = calc_cable_angle(points)
         data["cable_angle_deg"] = angle_data["cable_angle_deg"]
         data["cable_angle_chord_deg"] = angle_data["cable_angle_chord_deg"]
         data["cable_curvature_index"] = angle_data["cable_curvature_index"]
+
     data["saved_at"] = datetime.now().isoformat()
+
     with open(ann_path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    img_width = data.get("image_width", 1)
-    img_height = data.get("image_height", 1)
+
+    # ── Label YOLO ───────────────────────────────────────────────────────────────
     mode = data.get("annotation_mode", "centerline")
     if mode == "contour" and "left_points" in data and "right_points" in data:
         left = data["left_points"]
@@ -476,7 +584,8 @@ async def save_annotation(name: str, stem: str, data: dict):
         write_yolo_label(name, stem, left + right, img_width, img_height)
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
-    # FIX: ligne manquante — mise à jour du statut de l'image
+
+    # ── Mise à jour du statut image ──────────────────────────────────────────────
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
@@ -965,8 +1074,6 @@ async def list_models():
     models_list = []
     for f in sorted(MODELS_DIR.glob("*.pth")):
         stem = f.stem
-        is_global = stem.startswith("global_") or not stem.endswith("_vc_model") and "__" not in stem
-        # is_global si le nom ne correspond pas à {session}_vc_model
         is_global = not stem.endswith("_vc_model") or stem.startswith("global")
         models_list.append({
             "name": stem,
