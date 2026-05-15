@@ -19,7 +19,30 @@ const C = {
 interface AIPanelProps {
   sessionName: string;
   isGlobal?: boolean;
-  preselectedSessions?: string; // CSV de noms de sessions
+  preselectedSessions?: string;
+}
+
+function linReg(pts: { x: number; y: number }[]) {
+  const n = pts.length;
+  if (n < 2) return { a: 0, b: 0, r2: 0 };
+  const sx = pts.reduce((s, p) => s + p.x, 0);
+  const sy = pts.reduce((s, p) => s + p.y, 0);
+  const sxx = pts.reduce((s, p) => s + p.x * p.x, 0);
+  const sxy = pts.reduce((s, p) => s + p.x * p.y, 0);
+  const a = (n * sxy - sx * sy) / (n * sxx - sx * sx || 1);
+  const b = (sy - a * sx) / n;
+  const yMean = sy / n;
+  const ssTot = pts.reduce((s, p) => s + (p.y - yMean) ** 2, 0);
+  const ssRes = pts.reduce((s, p) => s + (p.y - (a * p.x + b)) ** 2, 0);
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+  return { a, b, r2 };
+}
+
+function regressionLine(a: number, b: number, xMin: number, xMax: number, n = 50) {
+  return Array.from({ length: n }, (_, i) => {
+    const x = xMin + (xMax - xMin) * i / (n - 1);
+    return { x: parseFloat(x.toFixed(3)), y: parseFloat((a * x + b).toFixed(3)) };
+  });
 }
 
 export default function AIPanel({ sessionName, isGlobal = false, preselectedSessions }: AIPanelProps) {
@@ -34,6 +57,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const [predictError, setPredictError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [globalModelName, setGlobalModelName] = useState("global_vc_model");
+  const [angleVcData, setAngleVcData] = useState<{ theta: number; vc: number }[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [predictImageUrl, setPredictImageUrl] = useState<string | null>(null);
@@ -42,7 +66,17 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
     listModels().then(setModels).catch(() => {});
   }, []);
 
-  useEffect(() => { loadModels(); }, [loadModels]);
+  const loadAngleVc = useCallback(() => {
+    const url = isGlobal
+      ? "/api/train/global/angle-vc-data"
+      : `/api/train/${encodeURIComponent(sessionName)}/angle-vc-data`;
+    fetch(url)
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setAngleVcData(d))
+      .catch(() => {});
+  }, [sessionName, isGlobal]);
+
+  useEffect(() => { loadModels(); loadAngleVc(); }, [loadModels, loadAngleVc]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModel) setSelectedModel(models[0].name);
@@ -60,13 +94,14 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
           clearInterval(pollRef.current!);
           setIsTraining(false);
           loadModels();
+          loadAngleVc();
         }
       } catch {
         clearInterval(pollRef.current!);
         setIsTraining(false);
       }
     }, 500);
-  }, [sessionName, isGlobal, loadModels]);
+  }, [sessionName, isGlobal, loadModels, loadAngleVc]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
@@ -123,9 +158,45 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
     "Val Loss": progress.val_losses?.[i] !== undefined ? +(progress.val_losses[i]).toFixed(4) : undefined,
   })) ?? [];
 
+  // ── Scatter Vc prédit vs réel — axes numériques, même domaine ─────────────────
   const scatterData = progress?.preds?.map((p, i) => ({
-    x: progress.true?.[i] ?? 0, y: p,
+    x: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
+    y: parseFloat(p.toFixed(2)),
   })) ?? [];
+
+  const allVals = scatterData.flatMap(d => [d.x, d.y]);
+  const rawMin = allVals.length > 0 ? Math.min(...allVals) : 0;
+  const rawMax = allVals.length > 0 ? Math.max(...allVals) : 40;
+  const mg = (rawMax - rawMin) * 0.12 + 1;
+  const axMin = parseFloat((rawMin - mg).toFixed(1));
+  const axMax = parseFloat((rawMax + mg).toFixed(1));
+  const diagPts = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
+
+  // ── Vc = f(θ) ────────────────────────────────────────────────────────────────
+  const annotPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
+  const regAnnot = linReg(annotPts);
+
+  // Points prédits par le modèle : on associe theta_i aux preds du dernier entraînement
+  const modelPredPts: { x: number; y: number }[] = [];
+  if (progress?.preds && progress.preds.length > 0 && angleVcData.length > 0) {
+    const nPreds = progress.preds.length;
+    angleVcData.slice(-nPreds).forEach((d, i) => {
+      modelPredPts.push({ x: d.theta, y: parseFloat((progress.preds![i]).toFixed(2)) });
+    });
+  }
+  const regModel = linReg(modelPredPts);
+
+  const allTh = [...annotPts, ...modelPredPts].map(p => p.x);
+  const allVc = [...annotPts, ...modelPredPts].map(p => p.y);
+  const thMin = allTh.length > 0 ? parseFloat((Math.min(...allTh) - 1).toFixed(1)) : 0;
+  const thMax = allTh.length > 0 ? parseFloat((Math.max(...allTh) + 1).toFixed(1)) : 90;
+  const vcMin = allVc.length > 0 ? parseFloat((Math.min(...allVc) - 2).toFixed(1)) : 0;
+  const vcMax = allVc.length > 0 ? parseFloat((Math.max(...allVc) + 2).toFixed(1)) : 40;
+
+  const regAnnotLine = annotPts.length >= 2 ? regressionLine(regAnnot.a, regAnnot.b, thMin, thMax) : [];
+  const regModelLine = modelPredPts.length >= 2 ? regressionLine(regModel.a, regModel.b, thMin, thMax) : [];
+
+  const TS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -143,7 +214,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
             <div style={{ fontSize: 13, color: C.muted, marginTop: 4, maxWidth: 420 }}>
               Entraîne un ResNet18 pour estimer la{" "}
               <span style={{ color: C.text, fontWeight: 600 }}>vitesse du courant marin (cm/s)</span>{" "}
-              depuis une image de câble immergé.
+              depuis une image de câble imergé.
             </div>
           </div>
         </div>
@@ -214,22 +285,26 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                 {progress.error}
               </div>
             )}
+
             {progress.status === "done" && progress.mae !== undefined && (
               <>
+                {/* Metriques */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
                   <MCard label="MAE" value={`${progress.mae} cm/s`} color={C.accent} />
                   <MCard label="RMSE" value={`${progress.rmse} cm/s`} color={C.blue} />
                   <MCard label="Dataset" value={`${progress.n_train}+${progress.n_val}`} color={C.green} sub="train+val" />
                 </div>
+
+                {/* Courbe de loss */}
                 {lossData.length > 1 && (
-                  <div style={{ marginBottom: 16 }}>
+                  <div style={{ marginBottom: 20 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Courbe de loss</div>
                     <ResponsiveContainer width="100%" height={180}>
                       <LineChart data={lossData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
                         <XAxis dataKey="epoch" tick={{ fontSize: 9, fill: C.muted }} />
                         <YAxis tick={{ fontSize: 9, fill: C.muted }} />
-                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11 }} />
+                        <Tooltip contentStyle={TS} />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Line type="monotone" dataKey="Train Loss" stroke={C.accent} dot={false} strokeWidth={2} />
                         <Line type="monotone" dataKey="Val Loss" stroke={C.orange} dot={false} strokeWidth={2} />
@@ -237,16 +312,128 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                     </ResponsiveContainer>
                   </div>
                 )}
+
+                {/* Scatter Vc prédit vs réel — ORTHONORMÉ */}
                 {scatterData.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Vc prédit vs réel</div>
-                    <ResponsiveContainer width="100%" height={180}>
-                      <ScatterChart>
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4 }}>Vc prédit vs réel (cm/s)</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+                      Chaque point = une image de validation · droite pointillée = prédiction parfaite (y = x)
+                    </div>
+                    <ResponsiveContainer width="100%" height={220}>
+                      <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                        <XAxis dataKey="x" tick={{ fontSize: 9, fill: C.muted }} />
-                        <YAxis dataKey="y" tick={{ fontSize: 9, fill: C.muted }} />
-                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, fontSize: 11 }} />
-                        <Scatter data={scatterData} fill={C.green} opacity={0.8} />
+                        <XAxis
+                          dataKey="x"
+                          type="number"
+                          name="Vc réel"
+                          domain={[axMin, axMax]}
+                          tickCount={6}
+                          label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -14, fontSize: 10, fill: C.muted }}
+                          tick={{ fontSize: 9, fill: C.muted }}
+                          axisLine={{ stroke: C.border }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          dataKey="y"
+                          type="number"
+                          name="Vc prédit"
+                          domain={[axMin, axMax]}
+                          tickCount={6}
+                          label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
+                          tick={{ fontSize: 9, fill: C.muted }}
+                          axisLine={{ stroke: C.border }}
+                          tickLine={false}
+                        />
+                        <Tooltip contentStyle={TS} formatter={(v: any) => [`${v} cm/s`]} />
+                        {/* Diagonale y=x */}
+                        <Scatter
+                          data={diagPts}
+                          line={{ stroke: "#888", strokeDasharray: "5 3", strokeWidth: 1.5 }}
+                          shape={() => null as any}
+                          legendType="none"
+                          name="y=x"
+                        />
+                        {/* Mesures */}
+                        <Scatter data={scatterData} fill={C.green} opacity={0.85} name="Mesures" />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* Graphique Vc = f(θ) */}
+                {annotPts.length >= 3 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4 }}>Vc = f(θ) — angle PCA du câble</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>
+                      <span style={{ color: C.accent }}>● Annotations</span>
+                      {" : Vc = "}{regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s
+                      <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regAnnot.r2.toFixed(3)})</span>
+                    </div>
+                    {regModelLine.length > 0 && (
+                      <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+                        <span style={{ color: C.green }}>● Modèle NN</span>
+                        {" : Vc = "}{regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s
+                        <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regModel.r2.toFixed(3)})</span>
+                      </div>
+                    )}
+                    <ResponsiveContainer width="100%" height={240}>
+                      <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis
+                          dataKey="x"
+                          type="number"
+                          name="θ"
+                          domain={[thMin, thMax]}
+                          tickCount={7}
+                          label={{ value: "θ (°)", position: "insideBottom", offset: -14, fontSize: 10, fill: C.muted }}
+                          tick={{ fontSize: 9, fill: C.muted }}
+                          axisLine={{ stroke: C.border }}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          dataKey="y"
+                          type="number"
+                          name="Vc"
+                          domain={[vcMin, vcMax]}
+                          tickCount={6}
+                          label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
+                          tick={{ fontSize: 9, fill: C.muted }}
+                          axisLine={{ stroke: C.border }}
+                          tickLine={false}
+                        />
+                        <Tooltip contentStyle={TS}
+                          formatter={(v: any, name: string) =>
+                            name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
+                          }
+                        />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        {/* Nuage annotations */}
+                        <Scatter data={annotPts} fill={C.accent} opacity={0.6} name="Annotations" />
+                        {/* Régression annotations */}
+                        {regAnnotLine.length > 0 && (
+                          <Scatter
+                            data={regAnnotLine}
+                            line={{ stroke: C.accent, strokeWidth: 1.5 }}
+                            shape={() => null as any}
+                            legendType="none"
+                            name="rég. annot."
+                          />
+                        )}
+                        {/* Points prédits par le modèle NN */}
+                        {modelPredPts.length > 0 && (
+                          <Scatter data={modelPredPts} fill={C.green} opacity={0.8} name="Modèle NN" />
+                        )}
+                        {/* Droite du modèle NN */}
+                        {regModelLine.length > 0 && (
+                          <Scatter
+                            data={regModelLine}
+                            line={{ stroke: C.green, strokeWidth: 2, strokeDasharray: "6 3" }}
+                            shape={() => null as any}
+                            legendType="none"
+                            name="rég. modèle"
+                          />
+                        )}
                       </ScatterChart>
                     </ResponsiveContainer>
                   </div>
@@ -332,7 +519,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
         )}
       </Section>
 
-      {/* MODÈLES + TÉLÉCHARGEMENT (onglet session seulement, pas global) */}
+      {/* MODÈLES + TÉLÉCHARGEMENT */}
       {!isGlobal && models.length > 0 && (
         <Section icon="📦" title="Modèles entraînés">
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
