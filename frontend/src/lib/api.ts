@@ -122,6 +122,42 @@ export const extractVideoFrames = (name: string, file: File, frameInterval: numb
 export const getVideoProgress = (name: string): Promise<VideoProgress> =>
   req(`/api/sessions/${name}/video/progress`);
 
+/**
+ * Crée une session par vidéo (nom = stem de la vidéo sanitisé) puis
+ * lance l'extraction des frames dans chacune.
+ * Retourne la liste des sessions créées avec leur statut.
+ */
+export const bulkImportVideos = async (
+  files: File[],
+  frameInterval: number,
+  folder: string,
+  onProgress?: (done: number, total: number, currentName: string) => void
+): Promise<{ name: string; ok: boolean; error?: string }[]> => {
+  const results: { name: string; ok: boolean; error?: string }[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    // Dériver le nom de session depuis le nom de fichier (sans extension)
+    const rawName = file.name.replace(/\.[^.]+$/, "");
+    // Sanitisation côté client (le backend sanitize aussi)
+    const sanitized = await sanitizeName(rawName).catch(() => rawName.replace(/[^a-zA-Z0-9_-]/g, "_"));
+    const sessionName = sanitized || `video_${i + 1}`;
+    onProgress?.(i, files.length, sessionName);
+    try {
+      // Créer la session (ignore l'erreur 409 si elle existe déjà)
+      await createSession(sessionName, `Import vidéo : ${file.name}`, folder).catch(e => {
+        if (!e.message?.includes("already exists")) throw e;
+      });
+      // Lancer l'extraction de frames (non bloquant côté backend)
+      await extractVideoFrames(sessionName, file, frameInterval);
+      results.push({ name: sessionName, ok: true });
+    } catch (e: any) {
+      results.push({ name: sessionName, ok: false, error: e.message });
+    }
+  }
+  onProgress?.(files.length, files.length, "");
+  return results;
+};
+
 export const getAnnotation = (name: string, stem: string) =>
   req(`/api/sessions/${name}/annotations/${stem}`);
 export const saveAnnotation = (name: string, stem: string, data: object) =>
@@ -171,6 +207,5 @@ export const predictVc = (modelName: string, file: File): Promise<{ vitesse_esti
   fd.append("file", file);
   return req("/api/predict", { method: "POST", body: fd });
 };
-// Téléchargement direct d'un modèle
 export const modelDownloadUrl = (filename: string) =>
   `${BASE}/api/models/${encodeURIComponent(filename)}/download`;
