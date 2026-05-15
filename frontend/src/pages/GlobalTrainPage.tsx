@@ -22,14 +22,21 @@ function linReg(pts: {x: number, y: number}[]) {
   const sy = pts.reduce((s, p) => s + p.y, 0);
   const sxx = pts.reduce((s, p) => s + p.x * p.x, 0);
   const sxy = pts.reduce((s, p) => s + p.x * p.y, 0);
-  const syy = pts.reduce((s, p) => s + p.y * p.y, 0);
-  const a = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+  const a = (n * sxy - sx * sy) / (n * sxx - sx * sx || 1);
   const b = (sy - a * sx) / n;
   const yMean = sy / n;
   const ssTot = pts.reduce((s, p) => s + (p.y - yMean) ** 2, 0);
   const ssRes = pts.reduce((s, p) => s + (p.y - (a * p.x + b)) ** 2, 0);
   const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
   return { a, b, r2 };
+}
+
+// Génère N points équidistants sur la droite y = a*x + b entre xMin et xMax
+function regressionLine(a: number, b: number, xMin: number, xMax: number, n = 50) {
+  return Array.from({ length: n }, (_, i) => {
+    const x = xMin + (xMax - xMin) * i / (n - 1);
+    return { x: parseFloat(x.toFixed(3)), y: parseFloat((a * x + b).toFixed(3)) };
+  });
 }
 
 export default function GlobalTrainPage() {
@@ -120,34 +127,56 @@ export default function GlobalTrainPage() {
     epoch: i + 1, train: tl, val: progress.val_losses?.[i] ?? 0,
   })) ?? [];
 
-  // ── Scatter Prédit vs Réel ─────────────────────────────────────────────────
+  // ── Scatter Prédit vs Réel — axes {x, y} pour orthonormé ──────────────────
+  // x = Vc réel, y = Vc prédit ; même domaine sur les deux axes
   const scatterData = progress?.preds?.map((p, i) => ({
-    reel: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
-    predit: parseFloat(p.toFixed(2)),
+    x: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
+    y: parseFloat(p.toFixed(2)),
   })) ?? [];
 
-  const allVals = scatterData.flatMap(d => [d.reel, d.predit]);
+  const allVals = scatterData.flatMap(d => [d.x, d.y]);
   const rawMin = allVals.length > 0 ? Math.min(...allVals) : 0;
   const rawMax = allVals.length > 0 ? Math.max(...allVals) : 40;
-  const margin = (rawMax - rawMin) * 0.1 + 1;
-  const axMin = parseFloat((rawMin - margin).toFixed(1));
-  const axMax = parseFloat((rawMax + margin).toFixed(1));
-  // Droite y=x (prédiction parfaite)
-  const diagPts = [{ reel: axMin, predit: axMin }, { reel: axMax, predit: axMax }];
+  const marginScatter = (rawMax - rawMin) * 0.12 + 1;
+  const axMin = parseFloat((rawMin - marginScatter).toFixed(1));
+  const axMax = parseFloat((rawMax + marginScatter).toFixed(1));
+  // Droite y=x parfaite
+  const diagPts = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
 
   // ── Graphique Vc = f(θ) ────────────────────────────────────────────────────
-  const thetaPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
-  const reg = linReg(thetaPts);
-  const thetaVals = thetaPts.map(p => p.x);
-  const vcVals = thetaPts.map(p => p.y);
-  const thetaMin = thetaVals.length > 0 ? parseFloat((Math.min(...thetaVals) - 1).toFixed(1)) : 0;
-  const thetaMax = thetaVals.length > 0 ? parseFloat((Math.max(...thetaVals) + 1).toFixed(1)) : 90;
-  const vcMin = vcVals.length > 0 ? parseFloat((Math.min(...vcVals) - 2).toFixed(1)) : 0;
-  const vcMax = vcVals.length > 0 ? parseFloat((Math.max(...vcVals) + 2).toFixed(1)) : 40;
-  const regPts = [
-    { x: thetaMin, y: parseFloat((reg.a * thetaMin + reg.b).toFixed(2)) },
-    { x: thetaMax, y: parseFloat((reg.a * thetaMax + reg.b).toFixed(2)) },
-  ];
+  // Nuage annoté (toutes sessions)
+  const annotPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
+
+  // Régression sur annotations
+  const regAnnot = linReg(annotPts);
+
+  // Régression sur les prédictions du modèle entraîné
+  // On associe chaque prédiction à son theta via angleVcData (même ordre)
+  // angleVcData et progress.preds correspondent aux images de val dans le même ordre
+  // -> on trace une régression linéaire Vc_prédit = f(theta) à partir des paires (theta_i, pred_i)
+  const modelPredPts: {x: number, y: number}[] = [];
+  if (progress?.preds && progress.preds.length > 0 && angleVcData.length > 0) {
+    // On prend les N derniers points d'angleVcData qui correspondent aux images de val
+    const nPreds = progress.preds.length;
+    const slice = angleVcData.slice(-nPreds);
+    slice.forEach((d, i) => {
+      modelPredPts.push({ x: d.theta, y: parseFloat((progress.preds![i]).toFixed(2)) });
+    });
+  }
+  const regModel = linReg(modelPredPts);
+
+  const allThetaVals = [...annotPts, ...modelPredPts].map(p => p.x);
+  const allVcVals = [...annotPts, ...modelPredPts].map(p => p.y);
+  const thetaMin = allThetaVals.length > 0 ? parseFloat((Math.min(...allThetaVals) - 1).toFixed(1)) : 0;
+  const thetaMax = allThetaVals.length > 0 ? parseFloat((Math.max(...allThetaVals) + 1).toFixed(1)) : 90;
+  const vcMin   = allVcVals.length > 0   ? parseFloat((Math.min(...allVcVals) - 2).toFixed(1)) : 0;
+  const vcMax   = allVcVals.length > 0   ? parseFloat((Math.max(...allVcVals) + 2).toFixed(1)) : 40;
+
+  // Droites de régression (50 points pour un rendu lisse)
+  const regAnnotLine = regressionLine(regAnnot.a, regAnnot.b, thetaMin, thetaMax);
+  const regModelLine = modelPredPts.length >= 2
+    ? regressionLine(regModel.a, regModel.b, thetaMin, thetaMax)
+    : [];
 
   const totalAnnotated = sessions.reduce((acc, s) =>
     acc + s.images.filter(i => i.status === "annotated").length, 0);
@@ -296,15 +325,16 @@ export default function GlobalTrainPage() {
             <div className="card">
               <h4 className="text-sm font-bold mb-1">🎯 Vc prédit vs réel (cm/s)</h4>
               <p className="text-[10px] text-dim mb-3">
-                Chaque point = une image · la droite pointillée = prédiction parfaite (y = x)
+                Chaque point = une image · droite pointillée = prédiction parfaite (y = x)
               </p>
               <ResponsiveContainer width="100%" height={240}>
+                {/* Les données sont {x: vc_reel, y: vc_predit} — même domaine sur les 2 axes */}
                 <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
-                    dataKey="reel"
+                    dataKey="x"
                     type="number"
-                    name="Réel"
+                    name="Vc réel"
                     domain={[axMin, axMax]}
                     tickCount={6}
                     label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -15, fontSize: 11, fill: "var(--color-text-dim)" }}
@@ -313,9 +343,9 @@ export default function GlobalTrainPage() {
                     tickLine={false}
                   />
                   <YAxis
-                    dataKey="predit"
+                    dataKey="y"
                     type="number"
-                    name="Prédit"
+                    name="Vc prédit"
                     domain={[axMin, axMax]}
                     tickCount={6}
                     label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
@@ -325,12 +355,11 @@ export default function GlobalTrainPage() {
                   />
                   <Tooltip
                     contentStyle={TS}
-                    formatter={(v: any, name: string) => [`${v} cm/s`, name === "reel" ? "Réel" : "Prédit"]}
+                    formatter={(v: any, name: string) => [`${v} cm/s`, name]}
                   />
                   {/* Diagonale y=x */}
                   <Scatter
                     data={diagPts}
-                    dataKey="predit"
                     line={{ stroke: "#888", strokeDasharray: "6 3", strokeWidth: 1.5 }}
                     shape={() => null as any}
                     legendType="none"
@@ -339,7 +368,6 @@ export default function GlobalTrainPage() {
                   {/* Points mesures */}
                   <Scatter
                     data={scatterData}
-                    dataKey="predit"
                     fill="var(--color-accent)"
                     opacity={0.85}
                     name="Mesures"
@@ -351,19 +379,22 @@ export default function GlobalTrainPage() {
         </div>
       )}
 
-      {/* Graphique Vc = f(θ) — toujours visible dès qu'il y a des données */}
-      {thetaPts.length >= 3 && (
+      {/* Graphique Vc = f(θ) */}
+      {annotPts.length >= 3 && (
         <div className="card animate-fade-in">
-          <h4 className="text-sm font-bold mb-1">📐 Vc en fonction de θ (angle PCA du câble)</h4>
-          <p className="text-[10px] text-dim mb-3">
-            Nuage de points de toutes les annotations · Droite de régression linéaire moindres carrés :
-            <span className="font-mono text-accent ml-1">
-              Vc = {reg.a >= 0 ? "+" : ""}{reg.a.toFixed(3)}·θ {reg.b >= 0 ? "+" : ""} {reg.b.toFixed(2)} cm/s
-            </span>
-            <span className="ml-2 text-dim">(R² = {reg.r2.toFixed(3)})</span>
+          <h4 className="text-sm font-bold mb-1">📐 Vc = f(θ) — angle PCA du câble</h4>
+          <p className="text-[10px] text-dim mb-1">
+            <span className="text-accent font-mono">🔵 Annotations : Vc = {regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s</span>
+            <span className="ml-2 text-dim">(R² = {regAnnot.r2.toFixed(3)})</span>
           </p>
-          <ResponsiveContainer width="100%" height={280}>
-            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
+          {regModelLine.length > 0 && (
+            <p className="text-[10px] text-dim mb-3">
+              <span className="text-green font-mono">🟢 Modèle NN : Vc = {regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s</span>
+              <span className="ml-2 text-dim">(R² = {regModel.r2.toFixed(3)})</span>
+            </p>
+          )}
+          <ResponsiveContainer width="100%" height={300}>
+            <ScatterChart margin={{ top: 10, right: 20, bottom: 35, left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
                 dataKey="x"
@@ -371,7 +402,7 @@ export default function GlobalTrainPage() {
                 name="θ"
                 domain={[thetaMin, thetaMax]}
                 tickCount={8}
-                label={{ value: "θ (°)", position: "insideBottom", offset: -15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                label={{ value: "θ (°)", position: "insideBottom", offset: -20, fontSize: 11, fill: "var(--color-text-dim)" }}
                 tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
                 axisLine={{ stroke: "var(--color-border)" }}
                 tickLine={false}
@@ -389,26 +420,49 @@ export default function GlobalTrainPage() {
               />
               <Tooltip
                 contentStyle={TS}
-                formatter={(v: any, name: string) => [name === "x" ? `${v}°` : `${v} cm/s`, name === "x" ? "θ" : "Vc"]}
-              />
-              {/* Droite de régression */}
-              <Scatter
-                data={regPts}
-                dataKey="y"
-                line={{ stroke: "var(--color-green)", strokeWidth: 2 }}
-                shape={() => null as any}
-                legendType="none"
-                name="Régression"
-              />
-              {/* Nuage de points */}
-              <Scatter
-                data={thetaPts}
-                dataKey="y"
-                fill="var(--color-accent)"
-                opacity={0.75}
-                name="Annotations"
+                formatter={(v: any, name: string) =>
+                  name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
+                }
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
+
+              {/* Nuage de points — annotations réelles */}
+              <Scatter
+                data={annotPts}
+                fill="var(--color-accent)"
+                opacity={0.65}
+                name="Annotations"
+              />
+
+              {/* Droite de régression — annotations */}
+              <Scatter
+                data={regAnnotLine}
+                line={{ stroke: "var(--color-accent)", strokeWidth: 2 }}
+                shape={() => null as any}
+                legendType="none"
+                name="Régression annotations"
+              />
+
+              {/* Points prédits par le modèle NN */}
+              {modelPredPts.length > 0 && (
+                <Scatter
+                  data={modelPredPts}
+                  fill="var(--color-green)"
+                  opacity={0.8}
+                  name="Modèle NN"
+                />
+              )}
+
+              {/* Droite de régression — modèle NN */}
+              {regModelLine.length > 0 && (
+                <Scatter
+                  data={regModelLine}
+                  line={{ stroke: "var(--color-green)", strokeWidth: 2, strokeDasharray: "6 3" }}
+                  shape={() => null as any}
+                  legendType="none"
+                  name="Régression modèle"
+                />
+              )}
             </ScatterChart>
           </ResponsiveContainer>
         </div>
