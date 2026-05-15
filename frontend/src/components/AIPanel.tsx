@@ -1,251 +1,486 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  trainSessionModel, getTrainProgress, listModels, predictVc,
+  trainSessionModel, getTrainProgress, trainGlobalModel, getGlobalTrainProgress,
+  listModels, predictVc,
   type TrainProgress, type ModelMeta,
 } from "../lib/api";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ScatterChart, Scatter, ResponsiveContainer,
 } from "recharts";
 
-const TOOLTIP_STYLE = {
-  background: "var(--color-surface)",
-  border: "1px solid var(--color-border)",
-  borderRadius: 8,
-  fontSize: 12,
-  color: "var(--color-text)",
+const C = {
+  bg: "#0D1117",
+  surface: "#161B22",
+  surface2: "#21262D",
+  accent: "#00FFFF",
+  green: "#00FF88",
+  orange: "#FFA500",
+  red: "#FF4444",
+  blue: "#3B82F6",
+  border: "#30363D",
+  text: "#E6EDF3",
+  muted: "#8B949E",
+  purple: "#a78bfa",
 };
 
-export default function AIPanel({ sessionName }: { sessionName: string }) {
+interface AIPanelProps {
+  sessionName: string;
+  isGlobal?: boolean;
+}
+
+export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps) {
   const [epochs, setEpochs] = useState(50);
   const [progress, setProgress] = useState<TrainProgress | null>(null);
+  const [isTraining, setIsTraining] = useState(false);
   const [models, setModels] = useState<ModelMeta[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [predFile, setPredFile] = useState<File | null>(null);
-  const [predResult, setPredResult] = useState<number | null>(null);
-  const [predError, setPredError] = useState("");
-  const [predicting, setPredicting] = useState(false);
+  const [predictFile, setPredictFile] = useState<File | null>(null);
+  const [predictResult, setPredictResult] = useState<number | null>(null);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [predictError, setPredictError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const pollRef = useRef<any>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [predictImageUrl, setPredictImageUrl] = useState<string | null>(null);
+  const [globalSessions, setGlobalSessions] = useState("");
+  const [globalModelName, setGlobalModelName] = useState("global_vc_model");
 
-  const loadModels = useCallback(async () => {
-    try {
-      const m = await listModels();
-      setModels(m);
-      if (m.length > 0 && !selectedModel) setSelectedModel(m[0].name);
-    } catch { /* ignore */ }
-  }, [selectedModel]);
+  const loadModels = useCallback(() => {
+    listModels().then(setModels).catch(() => {});
+  }, []);
 
   useEffect(() => {
     loadModels();
-    // Restore progress if already training
-    getTrainProgress(sessionName).then(p => {
-      if (p.status === "running" || p.status === "done") setProgress(p);
-    }).catch(() => {});
-  }, [sessionName, loadModels]);
+  }, [loadModels]);
 
-  const startPolling = () => {
+  useEffect(() => {
+    if (models.length > 0 && !selectedModel) {
+      setSelectedModel(models[0].name);
+    }
+  }, [models, selectedModel]);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
-        const p = await getTrainProgress(sessionName);
+        const p = isGlobal
+          ? await getGlobalTrainProgress()
+          : await getTrainProgress(sessionName);
         setProgress(p);
         if (p.status === "done" || p.status === "error") {
-          clearInterval(pollRef.current);
+          clearInterval(pollRef.current!);
+          setIsTraining(false);
           loadModels();
         }
-      } catch { clearInterval(pollRef.current); }
-    }, 800);
-  };
+      } catch {
+        clearInterval(pollRef.current!);
+        setIsTraining(false);
+      }
+    }, 500);
+  }, [sessionName, isGlobal, loadModels]);
+
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   const handleTrain = async () => {
+    setIsTraining(true);
+    setProgress({ epoch: 0, total_epochs: epochs, status: "starting" });
     try {
-      setProgress({ epoch: 0, total_epochs: epochs, status: "starting" });
-      await trainSessionModel(sessionName, epochs);
+      if (isGlobal) {
+        await trainGlobalModel({
+          sessions: globalSessions || undefined,
+          epochs,
+          model_name: globalModelName,
+        });
+      } else {
+        await trainSessionModel(sessionName, epochs);
+      }
       startPolling();
     } catch (e: any) {
       setProgress({ epoch: 0, total_epochs: epochs, status: "error", error: e.message });
+      setIsTraining(false);
     }
   };
 
+  const handlePredictFile = (file: File) => {
+    setPredictFile(file);
+    setPredictResult(null);
+    setPredictError(null);
+    const url = URL.createObjectURL(file);
+    if (predictImageUrl) URL.revokeObjectURL(predictImageUrl);
+    setPredictImageUrl(url);
+  };
+
   const handlePredict = async () => {
-    if (!predFile || !selectedModel) return;
-    setPredicting(true);
-    setPredError("");
-    setPredResult(null);
+    if (!predictFile || !selectedModel) return;
+    setIsPredicting(true);
+    setPredictResult(null);
+    setPredictError(null);
     try {
-      const r = await predictVc(selectedModel, predFile);
-      setPredResult(r.vitesse_estimee);
+      const r = await predictVc(selectedModel, predictFile);
+      setPredictResult(r.vitesse_estimee);
     } catch (e: any) {
-      setPredError(e.message);
+      setPredictError(e.message);
     } finally {
-      setPredicting(false);
+      setIsPredicting(false);
     }
   };
 
   const pct = progress && progress.total_epochs > 0
-    ? Math.round((progress.epoch / progress.total_epochs) * 100) : 0;
+    ? Math.round((progress.epoch / progress.total_epochs) * 100)
+    : 0;
 
   const lossData = progress?.train_losses?.map((tl, i) => ({
-    epoch: i + 1, train: tl, val: progress.val_losses?.[i] ?? 0,
+    epoch: i + 1,
+    "Train Loss": +tl.toFixed(4),
+    "Val Loss": progress.val_losses?.[i] !== undefined ? +(progress.val_losses[i]).toFixed(4) : undefined,
   })) ?? [];
 
   const scatterData = progress?.preds?.map((p, i) => ({
-    pred: parseFloat(p.toFixed(2)), true: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
+    x: progress.true?.[i] ?? 0,
+    y: p,
   })) ?? [];
 
   return (
-    <div className="space-y-8 animate-fade-in">
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
 
-      {/* ── Entraînement ── */}
-      <div className="card space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-base font-bold">🧠 Entraîner un modèle Vc</h3>
-            <p className="text-xs text-dim mt-0.5">ResNet18 — régression image → vitesse courant (cm/s)</p>
+      {/* ── HERO ── */}
+      <div style={{
+        background: "linear-gradient(135deg, rgba(0,255,255,0.06) 0%, rgba(59,130,246,0.06) 100%)",
+        border: `1px solid rgba(0,255,255,0.2)`,
+        borderRadius: 16, padding: 28,
+        display: "flex", alignItems: "center", gap: 24,
+      }}>
+        <div style={{ fontSize: 52, lineHeight: 1 }}>🌊</div>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: C.accent, letterSpacing: "-0.5px" }}>
+            Prédiction de Vc
           </div>
-          <div className="flex items-center gap-3">
-            <div>
-              <label className="text-xs text-dim">Epochs</label>
-              <input
-                type="number" value={epochs}
-                onChange={e => setEpochs(parseInt(e.target.value) || 10)}
-                min={1} max={500}
-                style={{ width: 72, marginLeft: 8 }}
-              />
-            </div>
-            <button
-              className="btn btn-primary"
-              onClick={handleTrain}
-              disabled={progress?.status === "running" || progress?.status === "starting"}
-            >
-              {progress?.status === "running" || progress?.status === "starting"
-                ? `⏳ Epoch ${progress.epoch}/${progress.total_epochs}...`
-                : "🧠 Lancer l'entraînement"}
-            </button>
+          <div style={{ fontSize: 14, color: C.muted, marginTop: 4, maxWidth: 460 }}>
+            Entraîne un ResNet18 sur vos annotations pour estimer la{" "}
+            <span style={{ color: C.text, fontWeight: 600 }}>vitesse du courant marin (cm/s)</span>{" "}
+            directement depuis une image de câble immergé.
           </div>
         </div>
+      </div>
 
-        {/* Progress bar */}
+      {/* ── SECTION ENTRAÎNEMENT ── */}
+      <Section icon="🧠" title="Entraîner un modèle Vc">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "flex-end", marginBottom: 16 }}>
+          <div>
+            <label style={labelStyle}>Époques d'entraînement</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                type="number"
+                value={epochs}
+                min={5}
+                max={300}
+                onChange={(e) => setEpochs(parseInt(e.target.value) || 50)}
+                style={{ width: 90 }}
+              />
+              <span style={{ fontSize: 12, color: C.muted }}>
+                (50 recommandé pour un premier test)
+              </span>
+            </div>
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={handleTrain}
+            disabled={isTraining}
+            style={{ height: 38, paddingLeft: 20, paddingRight: 20, whiteSpace: "nowrap" }}
+          >
+            {isTraining ? "⏳ Entraînement..." : "🧠 Lancer l'entraînement"}
+          </button>
+        </div>
+
+        {isGlobal && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Sessions à inclure (vide = toutes)</label>
+            <input
+              type="text"
+              value={globalSessions}
+              onChange={(e) => setGlobalSessions(e.target.value)}
+              placeholder="ex: session1,session2 — vide = toutes"
+              style={{ width: "100%" }}
+            />
+            <div style={{ marginTop: 12 }}>
+              <label style={labelStyle}>Nom du modèle</label>
+              <input
+                type="text"
+                value={globalModelName}
+                onChange={(e) => setGlobalModelName(e.target.value)}
+                placeholder="global_vc_model"
+                style={{ width: 240 }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Progression */}
         {progress && progress.status !== "idle" && (
-          <div className="animate-fade-in space-y-2">
-            <div className="flex justify-between text-xs">
-              <span className={progress.status === "error" ? "text-red" : progress.status === "done" ? "text-green font-bold" : "text-accent"}>
-                {progress.status === "error" ? `❌ ${progress.error}` :
-                 progress.status === "done" ? `✅ Terminé — MAE: ${progress.mae} cm/s · RMSE: ${progress.rmse} cm/s` :
-                 `Epoch ${progress.epoch} / ${progress.total_epochs}`}
+          <div style={{
+            background: C.surface2, borderRadius: 12, padding: 20,
+            border: `1px solid ${C.border}`, marginTop: 4,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                {progress.status === "starting" && "⏳ Démarrage..."}
+                {progress.status === "running" && `Époque ${progress.epoch} / ${progress.total_epochs}`}
+                {progress.status === "done" && "✅ Entraînement terminé"}
+                {progress.status === "error" && "❌ Erreur"}
               </span>
               {progress.status === "running" && (
-                <span className="text-dim">{progress.device} · {progress.n_train} train / {progress.n_val} val</span>
+                <span style={{ fontSize: 13, color: C.accent, fontWeight: 700 }}>{pct}%</span>
               )}
             </div>
-            {progress.status !== "error" && (
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${pct}%` }} />
+
+            {(progress.status === "running" || progress.status === "done") && (
+              <div style={{ background: C.border, borderRadius: 4, height: 6, marginBottom: 14, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", borderRadius: 4,
+                  width: `${progress.status === "done" ? 100 : pct}%`,
+                  background: progress.status === "done"
+                    ? `linear-gradient(90deg, ${C.green}, ${C.accent})`
+                    : `linear-gradient(90deg, ${C.accent}, ${C.blue})`,
+                  transition: "width 0.4s ease",
+                }} />
               </div>
+            )}
+
+            {progress.status === "error" && (
+              <div style={{ color: C.red, fontSize: 13, padding: "8px 12px", background: "rgba(255,68,68,0.08)", borderRadius: 8 }}>
+                {progress.error}
+              </div>
+            )}
+
+            {progress.status === "done" && progress.mae !== undefined && (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
+                  <MetricCard label="MAE" value={`${progress.mae} cm/s`} color={C.accent} />
+                  <MetricCard label="RMSE" value={`${progress.rmse} cm/s`} color={C.blue} />
+                  <MetricCard
+                    label="Dataset"
+                    value={`${progress.n_train}+${progress.n_val}`}
+                    color={C.green}
+                    sub="train + val"
+                  />
+                </div>
+
+                {lossData.length > 1 && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.muted, marginBottom: 10 }}>Courbe de loss</div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={lossData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis dataKey="epoch" tick={{ fontSize: 10, fill: C.muted }} />
+                        <YAxis tick={{ fontSize: 10, fill: C.muted }} />
+                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} />
+                        <Legend wrapperStyle={{ fontSize: 12, color: C.muted }} />
+                        <Line type="monotone" dataKey="Train Loss" stroke={C.accent} dot={false} strokeWidth={2} />
+                        <Line type="monotone" dataKey="Val Loss" stroke={C.orange} dot={false} strokeWidth={2} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {scatterData.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.muted, marginBottom: 10 }}>Vc prédit vs réel (cm/s)</div>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis dataKey="x" name="Vc réel" tick={{ fontSize: 10, fill: C.muted }} label={{ value: "Réel", position: "insideBottom", offset: -2, fontSize: 10, fill: C.muted }} />
+                        <YAxis dataKey="y" name="Vc prédit" tick={{ fontSize: 10, fill: C.muted }} label={{ value: "Prédit", angle: -90, position: "insideLeft", fontSize: 10, fill: C.muted }} />
+                        <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, fontSize: 12 }} />
+                        <Scatter data={scatterData} fill={C.green} opacity={0.8} />
+                      </ScatterChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
+      </Section>
 
-        {/* Charts */}
-        {progress?.status === "done" && lossData.length > 0 && (
-          <div className="grid grid-cols-2 gap-4 mt-2 animate-fade-in">
-            <div>
-              <h4 className="text-xs font-bold text-dim mb-2">Courbes de loss</h4>
-              <ResponsiveContainer width="100%" height={180}>
-                <LineChart data={lossData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-                  <XAxis dataKey="epoch" tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Line type="monotone" dataKey="train" stroke="var(--color-accent)" dot={false} name="Train" strokeWidth={2} />
-                  <Line type="monotone" dataKey="val" stroke="var(--color-green)" dot={false} name="Val" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            {scatterData.length > 0 && (
-              <div>
-                <h4 className="text-xs font-bold text-dim mb-2">Vc prédit vs réel (cm/s)</h4>
-                <ResponsiveContainer width="100%" height={180}>
-                  <ScatterChart>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-                    <XAxis dataKey="true" name="Réel" tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
-                    <YAxis dataKey="pred" name="Prédit" tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={TOOLTIP_STYLE} />
-                    <Scatter data={scatterData} fill="var(--color-accent)" opacity={0.75} />
-                  </ScatterChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* No data hint */}
-        {!progress && (
-          <div className="text-xs text-dim p-3 bg-bg rounded-lg border border-border">
-            ℹ️ Renseignez <strong>current_speed_cm_s</strong> sur au moins 2 images annotées pour activer l'entraînement.
-          </div>
-        )}
-      </div>
-
-      {/* ── Prédiction ── */}
-      <div className="card space-y-5">
-        <h3 className="text-base font-bold">🌊 Prédire Vc sur une image</h3>
-
+      {/* ── SECTION PRÉDICTION ── */}
+      <Section icon="🔍" title="Prédire Vc sur une image">
         {models.length === 0 ? (
-          <div className="text-sm text-dim p-4 bg-bg rounded-lg border border-border">
-            Aucun modèle disponible. Annotez des images avec <strong>current_speed_cm_s</strong> puis cliquez Entraîner.
+          <div style={{
+            padding: 24, textAlign: "center", color: C.muted, fontSize: 13,
+            background: C.surface2, borderRadius: 12, border: `1px dashed ${C.border}`,
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
+            Aucun modèle disponible.<br />
+            <span style={{ color: C.text }}>Annotez des images avec <code style={{ color: C.accent }}>current_speed_cm_s</code> puis cliquez Entraîner.</span>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs text-dim mb-1.5">Modèle</label>
-              <select value={selectedModel} onChange={e => setSelectedModel(e.target.value)}>
-                {models.map(m => (
-                  <option key={m.name} value={m.name}>
-                    {m.is_global ? "🌐 " : ""}{m.name} ({m.size_mb} MB)
-                  </option>
-                ))}
-              </select>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            {/* Colonne gauche : upload + modèle */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <label style={labelStyle}>Modèle à utiliser</label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  style={{ width: "100%" }}
+                >
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.is_global ? "🌍 " : "📂 "}{m.name} ({m.size_mb} MB)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={labelStyle}>Image à analyser</label>
+                <div
+                  className={`drop-zone ${dragOver ? "drag-over" : ""}`}
+                  style={{ minHeight: 100, cursor: "pointer" }}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                  onDragLeave={() => setDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault(); setDragOver(false);
+                    const f = e.dataTransfer.files[0];
+                    if (f) handlePredictFile(f);
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handlePredictFile(f); }}
+                  />
+                  {predictImageUrl ? (
+                    <img
+                      src={predictImageUrl}
+                      alt="prévisualisation"
+                      style={{ maxWidth: "100%", maxHeight: 140, borderRadius: 8, objectFit: "contain" }}
+                    />
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 28, marginBottom: 6 }}>📷</div>
+                      <div style={{ fontSize: 13, color: C.muted }}>Glissez une image ici ou cliquez</div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <button
+                className="btn btn-primary"
+                onClick={handlePredict}
+                disabled={!predictFile || !selectedModel || isPredicting}
+                style={{ justifyContent: "center" }}
+              >
+                {isPredicting ? "⏳ Analyse en cours..." : "🔍 Analyser"}
+              </button>
             </div>
 
-            <div
-              className={`drop-zone ${dragOver ? "drag-over" : ""} flex flex-col items-center justify-center`}
-              style={{ minHeight: 100 }}
-              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) setPredFile(f); }}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={e => e.target.files?.[0] && setPredFile(e.target.files[0])} />
-              {predFile ? (
-                <span className="text-sm font-bold text-accent">✓ {predFile.name}</span>
+            {/* Colonne droite : résultat */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              {predictResult !== null ? (
+                <div style={{
+                  background: "linear-gradient(135deg, rgba(0,255,255,0.1), rgba(0,255,136,0.1))",
+                  border: `2px solid ${C.accent}`,
+                  borderRadius: 16, padding: 32, textAlign: "center", width: "100%",
+                }}>
+                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+                    Vitesse estimée
+                  </div>
+                  <div style={{ fontSize: 52, fontWeight: 800, color: C.accent, lineHeight: 1, marginBottom: 8 }}>
+                    {predictResult}
+                  </div>
+                  <div style={{ fontSize: 20, color: C.text, fontWeight: 500 }}>cm/s</div>
+                  <div style={{ marginTop: 16, fontSize: 12, color: C.muted }}>
+                    Modèle : <span style={{ color: C.text }}>{selectedModel}</span>
+                  </div>
+                </div>
+              ) : predictError ? (
+                <div style={{
+                  background: "rgba(255,68,68,0.08)", border: `1px solid rgba(255,68,68,0.3)`,
+                  borderRadius: 12, padding: 20, textAlign: "center", color: C.red, fontSize: 13, width: "100%",
+                }}>
+                  ❌ {predictError}
+                </div>
               ) : (
-                <><div className="text-3xl mb-2">🖼</div><p className="text-xs text-dim">Glissez une image ou cliquez</p></>
+                <div style={{ textAlign: "center", color: C.muted, fontSize: 13 }}>
+                  <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>🌊</div>
+                  Le résultat apparaîtra ici
+                </div>
               )}
             </div>
-
-            <button
-              className="btn btn-primary w-full justify-center"
-              disabled={!predFile || predicting}
-              onClick={handlePredict}
-            >
-              {predicting ? "⏳ Analyse..." : "🔍 Analyser"}
-            </button>
-
-            {predResult !== null && (
-              <div className="animate-fade-in p-5 rounded-xl border border-accent/30 bg-accent/5 text-center">
-                <div className="text-3xl font-black text-accent tabular-nums">{predResult} cm/s</div>
-                <div className="text-xs text-dim mt-1">🌊 Vitesse estimée du courant</div>
-                <div className="text-[10px] text-dim mt-0.5">{selectedModel}</div>
-              </div>
-            )}
-            {predError && (
-              <div className="text-sm text-red p-3 bg-red/5 rounded-lg border border-red/20">❌ {predError}</div>
-            )}
           </div>
         )}
-      </div>
+      </Section>
+
+      {/* ── MODÈLES DISPONIBLES ── */}
+      {models.length > 0 && (
+        <Section icon="📦" title="Modèles entraînés">
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {models.map((m) => (
+              <div key={m.name} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "12px 16px",
+                background: C.surface2, borderRadius: 10, border: `1px solid ${C.border}`,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 18 }}>{m.is_global ? "🌍" : "📂"}</span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{m.name}</div>
+                    <div style={{ fontSize: 11, color: C.muted }}>Modifié {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+                  </div>
+                </div>
+                <span style={{ fontSize: 12, color: C.muted, background: C.surface, padding: "3px 10px", borderRadius: 20, border: `1px solid ${C.border}` }}>
+                  {m.size_mb} MB
+                </span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
+
+// ── Sous-composants ───────────────────────────────────────────────────────────
+
+function Section({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      background: "#161B22",
+      border: "1px solid #30363D",
+      borderRadius: 14, overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "14px 20px", borderBottom: "1px solid #30363D",
+        display: "flex", alignItems: "center", gap: 10,
+        background: "rgba(255,255,255,0.02)",
+      }}>
+        <span style={{ fontSize: 18 }}>{icon}</span>
+        <span style={{ fontWeight: 700, fontSize: 15, color: "#E6EDF3" }}>{title}</span>
+      </div>
+      <div style={{ padding: 20 }}>{children}</div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, color, sub }: { label: string; value: string; color: string; sub?: string }) {
+  return (
+    <div style={{
+      background: "#0D1117", borderRadius: 10, padding: "14px 16px",
+      border: "1px solid #30363D", textAlign: "center",
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
+      <div style={{ fontSize: 12, color: "#8B949E", marginTop: 2 }}>{label}</div>
+      {sub && <div style={{ fontSize: 10, color: "#8B949E" }}>{sub}</div>}
+    </div>
+  );
+}
+
+const labelStyle: React.CSSProperties = {
+  display: "block", fontSize: 12, color: "#8B949E",
+  marginBottom: 6, fontWeight: 500,
+};
