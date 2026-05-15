@@ -1,69 +1,53 @@
-# 🤿 COSMER Annotator
+# COSMER Annotator v2
 
-**Outil d'annotation de lignes d'amarrage** pour le Laboratoire COSMER, Université de Toulon.
-
-Crée un dataset annoté pour l'entraînement de modèles YOLOv8 segmentation.
+> Outil d'annotation et d'entraînement IA pour l'estimation de vitesse de courant marin par analyse visuelle de câble de mouillage.  
+> Laboratoire COSMER — Université de Toulon
 
 ## Installation
 
-### Backend (Python)
-
 ```bash
-cd backend
 pip install -r requirements.txt
+cd frontend && npm install
 ```
 
-### Frontend (React + TypeScript)
+## Dépendances système (extraction vidéo)
 
 ```bash
-cd frontend
-npm install
+brew install ffmpeg    # macOS
+apt install ffmpeg     # Ubuntu/Debian
 ```
 
 ## Lancement
 
 ```bash
-chmod +x start.sh
-./start.sh
+chmod +x start.sh && ./start.sh
+# Ouvrir http://localhost:5173
 ```
 
-Ouvrir **http://localhost:5173** dans le navigateur.
+## IA optionnelle (régression Vc + auto-annotation YOLO)
 
-## Architecture
-
-```
-data/sessions/{session_name}/
-  ├── images/          # Images JPG/PNG
-  ├── labels/          # Fichiers .txt YOLO (générés automatiquement)
-  ├── annotations/     # JSON par image
-  └── session.json     # Métadonnées de session
+```bash
+pip install torch torchvision          # entraînement + prédiction
+pip install ultralytics                # auto-annotation YOLO
+# Placer best.pt dans backend/best.pt
 ```
 
-## Export
+## Usage typique
 
-Le dataset exporté est au format YOLOv8 segmentation :
+1. Créer une session
+2. Uploader des vidéos DJI → extraire les frames (ffmpeg)
+3. Annoter les câbles + renseigner `current_speed_cm_s`
+4. Exporter le dataset YOLO
+5. Onglet **IA / Modèle** → Entraîner → Prédire sur nouvelle image
+
+## Structure des données
 
 ```
-dataset/
-  ├── images/train/
-  ├── images/val/
-  ├── labels/train/
-  ├── labels/val/
-  ├── metadata/
-  ├── dataset.yaml
-  ├── dataset_summary.csv
-  └── train_yolo.py
+data/
+  sessions/{session_name}/
+    images/          ← JPG/PNG
+    labels/          ← .txt YOLO (auto-générés)
+    annotations/     ← .json par image
+    session.json
+  models/            ← .pth entraînés
 ```
-
-## Raccourcis clavier
-
-| Touche | Action |
-|--------|--------|
-| Z | Annuler dernier point |
-| Escape | Effacer tous les points |
-| Enter | Confirmer annotation |
-| ← → | Image précédente / suivante |
-| Molette | Zoom |
-| Espace + glisser | Panoramique |
-| ? | Afficher les raccourcis |
-# annotator3
