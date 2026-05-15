@@ -75,6 +75,18 @@ async def global_exception_handler(request, exc):
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────────
 
+def ann_get(ann: dict, field: str, default=None):
+    """
+    Lecture compatible des champs d'annotation :
+    Cherche d'abord dans ann['conditions'] (nouveau format),
+    puis directement à la racine (ancien format).
+    """
+    conditions = ann.get("conditions", {})
+    if field in conditions:
+        return conditions[field]
+    return ann.get(field, default)
+
+
 def sanitize_name(name: str) -> str:
     nfkd = unicodedata.normalize("NFKD", name)
     ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
@@ -194,21 +206,11 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
 
 
 # ─── Uniformisation des points (équidistance + nombre fixe) ──────────────────────────
-# Appelée automatiquement à chaque validation d'annotation.
-#
-# Algorithme :
-#   1. Calcule la longueur curviligne totale de la polyligne.
-#   2. Rééchantillonne par interpolation linéaire en N points équidistants.
-#   3. N = min(nb_points_actuelle_anno, N_session) où N_session est
-#      le minimum observé dans toutes les annotations déjà sauvegardées.
-#      → Toutes les annotations de la session finiront avec le même N.
 
 def _resample_equidistant(points: list, n: int) -> list:
-    """Rééchantillonne une polyligne en n points équidistants (interpolation linéaire)."""
     if len(points) < 2 or n < 2:
         return points
     coords = np.array([[p["x"], p["y"]] for p in points], dtype=float)
-    # Distances cumulées
     diffs = np.diff(coords, axis=0)
     seg_lengths = np.sqrt((diffs ** 2).sum(axis=1))
     cum = np.concatenate([[0.0], np.cumsum(seg_lengths)])
@@ -222,12 +224,6 @@ def _resample_equidistant(points: list, n: int) -> list:
 
 
 def _get_session_target_n(session_name: str, current_n: int, default_n: int = 40) -> int:
-    """
-    Retourne le N cible pour la session :
-      - Collecte le nombre de points de toutes les annotations déjà sauvegardées.
-      - Prend le minimum entre ces valeurs ET current_n.
-      - Si aucune annotation existante, retourne min(current_n, default_n).
-    """
     ann_dir = get_session_dir(session_name) / "annotations"
     if not ann_dir.exists():
         return min(current_n, default_n)
@@ -244,16 +240,10 @@ def _get_session_target_n(session_name: str, current_n: int, default_n: int = 40
     if not existing_counts:
         return min(current_n, default_n)
     target = min(min(existing_counts), current_n)
-    return max(target, 2)  # au moins 2 points
+    return max(target, 2)
 
 
 def _retroactively_resample_session(session_name: str, target_n: int):
-    """
-    Rééchantillonne toutes les annotations existantes de la session
-    si leur nombre de points diffère de target_n.
-    Appelé uniquement quand target_n diminue (nouvelle annotation avec moins de points).
-    Met aussi à jour les labels YOLO et recalcule les angles.
-    """
     ann_dir = get_session_dir(session_name) / "annotations"
     if not ann_dir.exists():
         return
@@ -267,12 +257,10 @@ def _retroactively_resample_session(session_name: str, target_n: int):
             new_pts = _resample_equidistant(pts, target_n)
             ann["points"] = new_pts
             ann["n_points_normalized"] = target_n
-            # Recalcul angles
             angle_data = calc_cable_angle(new_pts)
             ann.update(angle_data)
             with open(ann_file, "w") as f:
                 json.dump(ann, f, indent=2, ensure_ascii=False)
-            # Mise à jour du label YOLO
             stem = ann_file.stem
             img_w = ann.get("image_width", 1)
             img_h = ann.get("image_height", 1)
@@ -553,15 +541,10 @@ async def save_annotation(name: str, stem: str, data: dict):
 
     # ── Uniformisation : rééchantillonnage équidistant ──────────────────────────
     if points and len(points) >= 2:
-        # 1. Déterminer N cible pour la session
         target_n = _get_session_target_n(name, len(points))
-
-        # 2. Rééchantillonner les points entrants
         points = _resample_equidistant(points, target_n)
         data["points"] = points
         data["n_points_normalized"] = target_n
-
-        # 3. Si target_n < N des annotations existantes, les réaligner rétroactivement
         _retroactively_resample_session(name, target_n)
 
     # ── Calcul des angles ────────────────────────────────────────────────────────
@@ -585,7 +568,7 @@ async def save_annotation(name: str, stem: str, data: dict):
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
 
-    # ── Mise à jour du statut image ──────────────────────────────────────────────
+    # ── Mise à jour du statut image ─────────────────────────────────────────────
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
@@ -616,9 +599,9 @@ async def get_last_conditions(name: str):
                 with open(ann_path) as f:
                     ann = json.load(f)
                 last = {
-                    "current_direction": ann.get("current_direction", ""),
-                    "camera_angle": ann.get("camera_angle", ""),
-                    "annotator_name": ann.get("annotator_name", ""),
+                    "current_direction": ann_get(ann, "current_direction", ""),
+                    "camera_angle": ann_get(ann, "camera_angle", ""),
+                    "annotator_name": ann_get(ann, "annotator_name", ""),
                 }
                 break
     return last
@@ -691,7 +674,13 @@ names: ['cable']
                 if ann_path.exists():
                     with open(ann_path) as af:
                         ann = json.load(af)
-                    row.update(ann)
+                    # Champs plats + champs depuis conditions
+                    flat = {k: v for k, v in ann.items() if k != "conditions"}
+                    row.update(flat)
+                    conditions = ann.get("conditions", {})
+                    for field in fieldnames:
+                        if field not in row and field in conditions:
+                            row[field] = conditions[field]
                 writer.writerow(row)
         zf.writestr("annotations.csv", csv_buf.getvalue())
     buf.seek(0)
@@ -772,20 +761,26 @@ async def get_statistics(name: str):
         return result
     def count_field(field):
         from collections import Counter
-        vals = [a.get(field, "") for a in annotations if a.get(field)]
+        vals = [ann_get(a, field, "") for a in annotations if ann_get(a, field, "")]
         return [{"name": k, "value": v} for k, v in Counter(vals).most_common()]
-    speeds = [float(a["current_speed_cm_s"]) for a in annotations if a.get("current_speed_cm_s") not in ("", None)]
-    curvatures = [float(a["cable_curvature_index"]) for a in annotations if a.get("cable_curvature_index") not in ("", None)]
-    angles = [float(a["cable_angle_deg"]) for a in annotations if a.get("cable_angle_deg") not in ("", None)]
+    def safe_float(a, field):
+        v = ann_get(a, field)
+        if v in ("", None):
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+    speeds = [v for a in annotations if (v := safe_float(a, "current_speed_cm_s")) is not None]
+    curvatures = [v for a in annotations if (v := safe_float(a, "cable_curvature_index")) is not None]
+    angles = [v for a in annotations if (v := safe_float(a, "cable_angle_deg")) is not None]
     avg_pts = sum(len(a.get("points", [])) for a in annotations) / max(len(annotations), 1)
     wave_scatter = []
     for a in annotations:
-        try:
-            amp = float(a.get("wave_amplitude_cm", "") or "")
-            spd = float(a.get("current_speed_cm_s", "") or "")
+        amp = safe_float(a, "wave_amplitude_cm")
+        spd = safe_float(a, "current_speed_cm_s")
+        if amp is not None and spd is not None:
             wave_scatter.append({"amplitude": amp, "speed": spd})
-        except (ValueError, TypeError):
-            pass
     balance_warnings = []
     if speeds:
         from collections import Counter
@@ -834,9 +829,10 @@ def run_train_session(session_name: str, epochs: int):
                 continue
             with open(ann_path) as f:
                 ann = json.load(f)
+            vc_raw = ann_get(ann, "current_speed_cm_s")
             try:
-                vc = float(ann.get("current_speed_cm_s", "") or "")
-            except (ValueError, TypeError):
+                vc = float(vc_raw)
+            except (TypeError, ValueError):
                 continue
             samples.append((str(img_path), vc))
         if len(samples) < 4:
@@ -964,9 +960,10 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
                     continue
                 with open(ann_path) as f:
                     ann = json.load(f)
+                vc_raw = ann_get(ann, "current_speed_cm_s")
                 try:
-                    vc = float(ann.get("current_speed_cm_s", "") or "")
-                except (ValueError, TypeError):
+                    vc = float(vc_raw)
+                except (TypeError, ValueError):
                     continue
                 samples.append((str(img_path), vc))
         if len(samples) < 4:
