@@ -28,7 +28,7 @@ import numpy as np
 
 app = FastAPI(title="COSMER Annotator API v2", version="2.0.0")
 
-# ─── Progression globals ───────────────────────────────────────────────────────
+# ─── Progression globals ───────────────────────────────────────────────
 EXTRACTION_PROGRESS = {}  # {session_name: {current, total, status}}
 TRAIN_PROGRESS = {}        # {session_name: {epoch, total_epochs, status, ...}}
 GLOBAL_TRAIN_PROGRESS = {}  # {"global": {...}}
@@ -42,13 +42,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
+# ─── Paths ────────────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent.parent / "data" / "sessions"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR = Path(__file__).parent.parent / "data" / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── YOLO model (optional) ────────────────────────────────────────────────────
+# ─── YOLO model (optional) ───────────────────────────────────────────────────
 YOLO_MODEL = None
 YOLO_MODEL_PATH = Path(__file__).parent / "best.pt"
 
@@ -73,7 +73,7 @@ async def global_exception_handler(request, exc):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────────
 
 def sanitize_name(name: str) -> str:
     nfkd = unicodedata.normalize("NFKD", name)
@@ -193,7 +193,7 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
     return points
 
 
-# ─── PyTorch helper ───────────────────────────────────────────────────────────
+# ─── PyTorch helper ───────────────────────────────────────────────────────────────────
 def get_torch_modules():
     try:
         import torch
@@ -206,7 +206,7 @@ def get_torch_modules():
         return None, None, None, None, None, None, None
 
 
-# ─── Session Routes ────────────────────────────────────────────────────────────
+# ─── Session Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sanitize")
 async def sanitize_name_endpoint(name: str = Query(...)):
@@ -280,7 +280,7 @@ async def batch_move_sessions(names: List[str] = Body(...), folder: str = Body(.
     return {"updated": updated}
 
 
-# ─── Image Routes ─────────────────────────────────────────────────────────────
+# ─── Image Routes ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/sessions/{name}/images")
 async def upload_images(name: str, files: List[UploadFile] = File(...)):
@@ -334,7 +334,7 @@ async def delete_image(name: str, filename: str):
     return {"message": f"Image '{filename}' deleted"}
 
 
-# ─── YOLO Auto-annotation ──────────────────────────────────────────────────────
+# ─── YOLO Auto-annotation ────────────────────────────────────────────────────────
 
 @app.get("/api/yolo/status")
 async def yolo_status():
@@ -369,7 +369,7 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
         raise HTTPException(status_code=500, detail=f"Erreur YOLO: {str(e)}")
 
 
-# ─── Video Extraction (FFmpeg) ─────────────────────────────────────────────────
+# ─── Video Extraction (FFmpeg) ──────────────────────────────────────────────────────────
 
 def extract_frames_ffmpeg_bg(video_path: str, output_dir: str, video_stem: str,
                               frame_interval: int, session_name: str):
@@ -441,7 +441,7 @@ async def extract_video_frames(
     return {"status": "started", "message": "Extraction lancée via FFmpeg en arrière-plan"}
 
 
-# ─── Annotation Routes ─────────────────────────────────────────────────────────
+# ─── Annotation Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/annotations/{stem}")
 async def get_annotation(name: str, stem: str):
@@ -476,5 +476,549 @@ async def save_annotation(name: str, stem: str, data: dict):
         write_yolo_label(name, stem, left + right, img_width, img_height)
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
+    # FIX: ligne manquante — mise à jour du statut de l'image
     for img in meta["images"]:
-        if Path(img["filename"]).stem 
+        if Path(img["filename"]).stem == stem:
+            img["status"] = "annotated"
+            break
+    save_session_meta(name, meta)
+    return data
+
+@app.post("/api/sessions/{name}/images/{filename}/ignore")
+async def ignore_image(name: str, filename: str):
+    meta = load_session_meta(name)
+    for img in meta["images"]:
+        if img["filename"] == filename:
+            img["status"] = "ignored"
+            break
+    save_session_meta(name, meta)
+    return {"message": f"Image '{filename}' ignored"}
+
+@app.get("/api/sessions/{name}/last-conditions")
+async def get_last_conditions(name: str):
+    meta = load_session_meta(name)
+    ann_dir = get_session_dir(name) / "annotations"
+    last = {}
+    for img in reversed(meta["images"]):
+        if img["status"] == "annotated":
+            stem = Path(img["filename"]).stem
+            ann_path = ann_dir / f"{stem}.json"
+            if ann_path.exists():
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                last = {
+                    "current_direction": ann.get("current_direction", ""),
+                    "camera_angle": ann.get("camera_angle", ""),
+                    "annotator_name": ann.get("annotator_name", ""),
+                }
+                break
+    return last
+
+
+# ─── Export Routes ───────────────────────────────────────────────────────────────────────
+
+@app.get("/api/sessions/{name}/export/stats")
+async def export_stats(name: str):
+    meta = load_session_meta(name)
+    annotated = [img for img in meta["images"] if img["status"] == "annotated"]
+    total = len(annotated)
+    train_count = int(total * 0.8)
+    val_count = total - train_count
+    return {
+        "total_annotated": total,
+        "total_images": len(meta["images"]),
+        "train_count": train_count,
+        "val_count": val_count,
+    }
+
+@app.get("/api/sessions/{name}/export/download")
+async def export_download(name: str):
+    meta = load_session_meta(name)
+    session_dir = get_session_dir(name)
+    annotated = [img for img in meta["images"] if img["status"] == "annotated"]
+    if not annotated:
+        raise HTTPException(status_code=404, detail="No annotated images")
+    buf = io.BytesIO()
+    random.shuffle(annotated)
+    split = int(len(annotated) * 0.8)
+    train_imgs = annotated[:split]
+    val_imgs = annotated[split:]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
+            for img_meta in imgs:
+                fn = img_meta["filename"]
+                stem = Path(fn).stem
+                img_path = session_dir / "images" / fn
+                lbl_path = session_dir / "labels" / f"{stem}.txt"
+                ann_path = session_dir / "annotations" / f"{stem}.json"
+                if img_path.exists():
+                    zf.write(img_path, f"images/{split_name}/{fn}")
+                if lbl_path.exists():
+                    zf.write(lbl_path, f"labels/{split_name}/{stem}.txt")
+                if ann_path.exists():
+                    zf.write(ann_path, f"annotations/{split_name}/{stem}.json")
+        yaml_content = f"""path: ./dataset
+train: images/train
+val: images/val
+nc: 1
+names: ['cable']
+"""
+        zf.writestr("dataset.yaml", yaml_content)
+        csv_buf = io.StringIO()
+        fieldnames = [
+            "filename", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
+            "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
+            "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
+            "water_depth_m", "cable_tension_n", "notes", "split",
+        ]
+        writer = csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
+            for img_meta in imgs:
+                fn = img_meta["filename"]
+                stem = Path(fn).stem
+                ann_path = session_dir / "annotations" / f"{stem}.json"
+                row = {"filename": fn, "split": split_name}
+                if ann_path.exists():
+                    with open(ann_path) as af:
+                        ann = json.load(af)
+                    row.update(ann)
+                writer.writerow(row)
+        zf.writestr("annotations.csv", csv_buf.getvalue())
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={name}_dataset.zip"},
+    )
+
+@app.get("/api/export/global/download")
+async def global_export_download():
+    all_sessions = []
+    for d in sorted(DATA_DIR.iterdir()):
+        if d.is_dir() and (d / "session.json").exists():
+            all_sessions.append(load_session_meta(d.name))
+    all_annotated = []
+    for s in all_sessions:
+        for img in s["images"]:
+            if img["status"] == "annotated":
+                all_annotated.append((s["name"], img))
+    if not all_annotated:
+        raise HTTPException(status_code=404, detail="No annotated images across sessions")
+    buf = io.BytesIO()
+    random.shuffle(all_annotated)
+    split = int(len(all_annotated) * 0.8)
+    train_imgs = all_annotated[:split]
+    val_imgs = all_annotated[split:]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
+            for session_name, img_meta in imgs:
+                session_dir = get_session_dir(session_name)
+                fn = img_meta["filename"]
+                stem = Path(fn).stem
+                unique = f"{session_name}__{fn}"
+                img_path = session_dir / "images" / fn
+                lbl_path = session_dir / "labels" / f"{stem}.txt"
+                ann_path = session_dir / "annotations" / f"{stem}.json"
+                if img_path.exists():
+                    zf.write(img_path, f"images/{split_name}/{unique}")
+                if lbl_path.exists():
+                    zf.write(lbl_path, f"labels/{split_name}/{session_name}__{stem}.txt")
+                if ann_path.exists():
+                    zf.write(ann_path, f"annotations/{split_name}/{session_name}__{stem}.json")
+        yaml_content = "path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n"
+        zf.writestr("dataset.yaml", yaml_content)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=global_dataset.zip"},
+    )
+
+
+# ─── Statistics ────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/sessions/{name}/statistics")
+async def get_statistics(name: str):
+    meta = load_session_meta(name)
+    session_dir = get_session_dir(name)
+    ann_dir = session_dir / "annotations"
+    total = len(meta["images"])
+    annotated_imgs = [img for img in meta["images"] if img["status"] == "annotated"]
+    ignored_imgs = [img for img in meta["images"] if img["status"] == "ignored"]
+    annotations = []
+    for img in annotated_imgs:
+        stem = Path(img["filename"]).stem
+        ann_path = ann_dir / f"{stem}.json"
+        if ann_path.exists():
+            with open(ann_path) as f:
+                annotations.append(json.load(f))
+    def histo(values, edges):
+        result = []
+        for i in range(len(edges) - 1):
+            lo, hi = edges[i], edges[i + 1]
+            label = f"{lo}-{hi}"
+            count = sum(1 for v in values if lo <= v < hi)
+            result.append({"range": label, "count": count})
+        return result
+    def count_field(field):
+        from collections import Counter
+        vals = [a.get(field, "") for a in annotations if a.get(field)]
+        return [{"name": k, "value": v} for k, v in Counter(vals).most_common()]
+    speeds = [float(a["current_speed_cm_s"]) for a in annotations if a.get("current_speed_cm_s") not in ("", None)]
+    curvatures = [float(a["cable_curvature_index"]) for a in annotations if a.get("cable_curvature_index") not in ("", None)]
+    angles = [float(a["cable_angle_deg"]) for a in annotations if a.get("cable_angle_deg") not in ("", None)]
+    avg_pts = sum(len(a.get("points", [])) for a in annotations) / max(len(annotations), 1)
+    wave_scatter = []
+    for a in annotations:
+        try:
+            amp = float(a.get("wave_amplitude_cm", "") or "")
+            spd = float(a.get("current_speed_cm_s", "") or "")
+            wave_scatter.append({"amplitude": amp, "speed": spd})
+        except (ValueError, TypeError):
+            pass
+    balance_warnings = []
+    if speeds:
+        from collections import Counter
+        speed_counts = Counter([round(s) for s in speeds])
+        max_c = max(speed_counts.values())
+        min_c = min(speed_counts.values())
+        if max_c > min_c * 3:
+            balance_warnings.append("Déséquilibre important dans la distribution des vitesses.")
+    return {
+        "total": total,
+        "annotated": len(annotated_imgs),
+        "ignored": len(ignored_imgs),
+        "remaining": total - len(annotated_imgs) - len(ignored_imgs),
+        "speed_histogram": histo(speeds, [0, 5, 10, 20, 30, 50, 100]),
+        "curvature_histogram": histo(curvatures, [0, 1, 2, 5, 10, 20, 50]),
+        "angle_histogram": histo(angles, [0, 5, 10, 15, 20, 30, 45, 90]),
+        "camera_angles": count_field("camera_angle"),
+        "current_directions": count_field("current_direction"),
+        "wave_scatter": wave_scatter,
+        "avg_points": round(avg_pts, 1),
+        "annotators": count_field("annotator_name"),
+        "balance_warnings": balance_warnings,
+    }
+
+
+# ─── Train Vc (ResNet18 per session) ──────────────────────────────────────────────────────────
+
+def run_train_session(session_name: str, epochs: int):
+    torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
+    if torch is None:
+        TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": "PyTorch non installé"}
+        return
+    try:
+        meta = load_session_meta(session_name)
+        session_dir = get_session_dir(session_name)
+        ann_dir = session_dir / "annotations"
+        images_dir = session_dir / "images"
+        samples = []
+        for img in meta["images"]:
+            if img["status"] != "annotated":
+                continue
+            stem = Path(img["filename"]).stem
+            ann_path = ann_dir / f"{stem}.json"
+            img_path = images_dir / img["filename"]
+            if not ann_path.exists() or not img_path.exists():
+                continue
+            with open(ann_path) as f:
+                ann = json.load(f)
+            try:
+                vc = float(ann.get("current_speed_cm_s", "") or "")
+            except (ValueError, TypeError):
+                continue
+            samples.append((str(img_path), vc))
+        if len(samples) < 4:
+            TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "error",
+                                             "error": f"Pas assez d'images annotées avec Vc ({len(samples)} trouvées, minimum 4)"}
+            return
+        random.shuffle(samples)
+        split = max(1, int(len(samples) * 0.8))
+        train_samples = samples[:split]
+        val_samples = samples[split:] if len(samples) > split else samples[-1:]
+        tf_train = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        tf_val = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        class VcDataset(Dataset):
+            def __init__(self, s, tf):
+                self.s = s
+                self.tf = tf
+            def __len__(self):
+                return len(self.s)
+            def __getitem__(self, i):
+                path, vc = self.s[i]
+                img = Image.open(path).convert("RGB")
+                return self.tf(img), torch.tensor([vc], dtype=torch.float32)
+        train_loader = DataLoader(VcDataset(train_samples, tf_train), batch_size=min(8, len(train_samples)), shuffle=True)
+        val_loader = DataLoader(VcDataset(val_samples, tf_val), batch_size=min(8, len(val_samples)))
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+        model = models.resnet18(weights=None)
+        model.fc = nn.Sequential(nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.3), nn.Linear(128, 1))
+        model = model.to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
+        criterion = nn.MSELoss()
+        train_losses, val_losses = [], []
+        TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "running",
+                                         "n_train": len(train_samples), "n_val": len(val_samples),
+                                         "device": str(device)}
+        for ep in range(epochs):
+            model.train()
+            tl = 0.0
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad()
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                optimizer.step()
+                tl += loss.item()
+            scheduler.step()
+            model.eval()
+            vl, preds_list, true_list = 0.0, [], []
+            with torch.no_grad():
+                for xb, yb in val_loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    out = model(xb)
+                    vl += criterion(out, yb).item()
+                    preds_list += out.squeeze().cpu().tolist() if out.squeeze().dim() > 0 else [out.squeeze().item()]
+                    true_list += yb.squeeze().cpu().tolist() if yb.squeeze().dim() > 0 else [yb.squeeze().item()]
+            train_losses.append(round(tl / len(train_loader), 4))
+            val_losses.append(round(vl / len(val_loader), 4))
+            TRAIN_PROGRESS[session_name].update({"epoch": ep + 1, "train_losses": train_losses, "val_losses": val_losses})
+        preds_arr = np.array(preds_list)
+        true_arr = np.array(true_list)
+        mae = float(np.mean(np.abs(preds_arr - true_arr)))
+        rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
+        model_filename = f"{session_name}_vc_model.pth"
+        torch.save(model.state_dict(), MODELS_DIR / model_filename)
+        TRAIN_PROGRESS[session_name].update({
+            "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
+            "preds": [round(float(p), 2) for p in preds_list],
+            "true": [round(float(t), 2) for t in true_list],
+            "model_name": session_name,
+        })
+    except Exception as e:
+        TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": str(e)}
+
+@app.post("/api/sessions/{name}/train")
+async def train_session_model(name: str, background_tasks: BackgroundTasks, epochs: int = Form(50)):
+    load_session_meta(name)
+    TRAIN_PROGRESS[name] = {"epoch": 0, "total_epochs": epochs, "status": "starting"}
+    background_tasks.add_task(run_train_session, name, epochs)
+    return {"status": "started", "session": name, "epochs": epochs}
+
+@app.get("/api/sessions/{name}/train/progress")
+async def get_train_progress(name: str):
+    return TRAIN_PROGRESS.get(name, {"epoch": 0, "total_epochs": 0, "status": "idle"})
+
+
+# ─── Train Global Vc ─────────────────────────────────────────────────────────────────────────
+
+def run_train_global(session_names: Optional[List[str]], epochs: int, model_name: str):
+    torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
+    key = "global"
+    if torch is None:
+        GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": "PyTorch non installé"}
+        return
+    try:
+        if session_names:
+            sessions_to_use = session_names
+        else:
+            sessions_to_use = [d.name for d in sorted(DATA_DIR.iterdir()) if d.is_dir() and (d / "session.json").exists()]
+        samples = []
+        for sname in sessions_to_use:
+            try:
+                meta = load_session_meta(sname)
+            except Exception:
+                continue
+            session_dir = get_session_dir(sname)
+            ann_dir = session_dir / "annotations"
+            images_dir = session_dir / "images"
+            for img in meta["images"]:
+                if img["status"] != "annotated":
+                    continue
+                stem = Path(img["filename"]).stem
+                ann_path = ann_dir / f"{stem}.json"
+                img_path = images_dir / img["filename"]
+                if not ann_path.exists() or not img_path.exists():
+                    continue
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                try:
+                    vc = float(ann.get("current_speed_cm_s", "") or "")
+                except (ValueError, TypeError):
+                    continue
+                samples.append((str(img_path), vc))
+        if len(samples) < 4:
+            GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "error",
+                                           "error": f"Pas assez d'images ({len(samples)} trouvées, minimum 4)"}
+            return
+        random.shuffle(samples)
+        split = max(1, int(len(samples) * 0.8))
+        train_samples = samples[:split]
+        val_samples = samples[split:] if len(samples) > split else samples[-1:]
+        tf_train = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        tf_val = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        class VcDataset(Dataset):
+            def __init__(self, s, tf):
+                self.s = s
+                self.tf = tf
+            def __len__(self):
+                return len(self.s)
+            def __getitem__(self, i):
+                path, vc = self.s[i]
+                img = Image.open(path).convert("RGB")
+                return self.tf(img), torch.tensor([vc], dtype=torch.float32)
+        train_loader = DataLoader(VcDataset(train_samples, tf_train), batch_size=min(16, len(train_samples)), shuffle=True)
+        val_loader = DataLoader(VcDataset(val_samples, tf_val), batch_size=min(16, len(val_samples)))
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+        model = models.resnet18(weights=None)
+        model.fc = nn.Sequential(nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.3), nn.Linear(128, 1))
+        model = model.to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
+        criterion = nn.MSELoss()
+        train_losses, val_losses = [], []
+        GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "running",
+                                       "n_train": len(train_samples), "n_val": len(val_samples),
+                                       "device": str(device)}
+        for ep in range(epochs):
+            model.train()
+            tl = 0.0
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                optimizer.zero_grad()
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                optimizer.step()
+                tl += loss.item()
+            scheduler.step()
+            model.eval()
+            vl, preds_list, true_list = 0.0, [], []
+            with torch.no_grad():
+                for xb, yb in val_loader:
+                    xb, yb = xb.to(device), yb.to(device)
+                    out = model(xb)
+                    vl += criterion(out, yb).item()
+                    preds_list += out.squeeze().cpu().tolist() if out.squeeze().dim() > 0 else [out.squeeze().item()]
+                    true_list += yb.squeeze().cpu().tolist() if yb.squeeze().dim() > 0 else [yb.squeeze().item()]
+            train_losses.append(round(tl / len(train_loader), 4))
+            val_losses.append(round(vl / len(val_loader), 4))
+            GLOBAL_TRAIN_PROGRESS[key].update({"epoch": ep + 1, "train_losses": train_losses, "val_losses": val_losses})
+        preds_arr = np.array(preds_list)
+        true_arr = np.array(true_list)
+        mae = float(np.mean(np.abs(preds_arr - true_arr)))
+        rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
+        model_filename = f"{model_name}.pth"
+        torch.save(model.state_dict(), MODELS_DIR / model_filename)
+        GLOBAL_TRAIN_PROGRESS[key].update({
+            "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
+            "preds": [round(float(p), 2) for p in preds_list],
+            "true": [round(float(t), 2) for t in true_list],
+            "model_name": model_name,
+        })
+    except Exception as e:
+        GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": str(e)}
+
+@app.post("/api/train/global")
+async def train_global(
+    background_tasks: BackgroundTasks,
+    sessions: Optional[str] = Form(None),
+    epochs: int = Form(50),
+    model_name: str = Form("global_vc_model"),
+):
+    session_list = [s.strip() for s in sessions.split(",") if s.strip()] if sessions else None
+    GLOBAL_TRAIN_PROGRESS["global"] = {"epoch": 0, "total_epochs": epochs, "status": "starting"}
+    background_tasks.add_task(run_train_global, session_list, epochs, model_name)
+    return {"status": "started", "sessions": session_list, "epochs": epochs, "model_name": model_name}
+
+@app.get("/api/train/global/progress")
+async def get_global_train_progress():
+    return GLOBAL_TRAIN_PROGRESS.get("global", {"epoch": 0, "total_epochs": 0, "status": "idle"})
+
+
+# ─── Models ────────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/models")
+async def list_models():
+    models_list = []
+    for f in sorted(MODELS_DIR.glob("*.pth")):
+        stem = f.stem
+        is_global = stem.startswith("global_") or not stem.endswith("_vc_model") and "__" not in stem
+        # is_global si le nom ne correspond pas à {session}_vc_model
+        is_global = not stem.endswith("_vc_model") or stem.startswith("global")
+        models_list.append({
+            "name": stem,
+            "filename": f.name,
+            "size_mb": round(f.stat().st_size / 1024 / 1024, 2),
+            "modified_at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+            "is_global": is_global,
+        })
+    return models_list
+
+@app.get("/api/models/{filename}/download")
+async def download_model(filename: str):
+    model_path = MODELS_DIR / filename
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Modèle introuvable")
+    return FileResponse(
+        path=str(model_path),
+        media_type="application/octet-stream",
+        filename=filename,
+    )
+
+
+# ─── Predict Vc ───────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/predict")
+async def predict_vc(model_name: str = Form(...), file: UploadFile = File(...)):
+    torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
+    if torch is None:
+        raise HTTPException(status_code=503, detail="PyTorch non installé")
+    model_path = MODELS_DIR / f"{model_name}.pth"
+    if not model_path.exists():
+        model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail=f"Modèle '{model_name}' introuvable")
+    try:
+        content = await file.read()
+        from PIL import Image as PILImage
+        img = PILImage.open(io.BytesIO(content)).convert("RGB")
+        tf = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        x = tf(img).unsqueeze(0)
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+        net = models.resnet18(weights=None)
+        net.fc = nn.Sequential(nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.3), nn.Linear(128, 1))
+        net.load_state_dict(torch.load(model_path, map_location=device))
+        net = net.to(device)
+        net.eval()
+        with torch.no_grad():
+            pred = net(x.to(device)).item()
+        return {"vitesse_estimee": round(pred, 2), "model_used": model_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur prédiction: {str(e)}")
