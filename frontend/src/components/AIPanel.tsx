@@ -10,26 +10,19 @@ import {
 } from "recharts";
 
 const C = {
-  bg: "#0D1117",
-  surface: "#161B22",
-  surface2: "#21262D",
-  accent: "#00FFFF",
-  green: "#00FF88",
-  orange: "#FFA500",
-  red: "#FF4444",
-  blue: "#3B82F6",
-  border: "#30363D",
-  text: "#E6EDF3",
-  muted: "#8B949E",
-  purple: "#a78bfa",
+  bg: "#0D1117", surface: "#161B22", surface2: "#21262D",
+  accent: "#00FFFF", green: "#00FF88", orange: "#FFA500",
+  red: "#FF4444", blue: "#3B82F6", border: "#30363D",
+  text: "#E6EDF3", muted: "#8B949E",
 };
 
 interface AIPanelProps {
   sessionName: string;
   isGlobal?: boolean;
+  preselectedSessions?: string; // CSV de noms de sessions
 }
 
-export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps) {
+export default function AIPanel({ sessionName, isGlobal = false, preselectedSessions }: AIPanelProps) {
   const [epochs, setEpochs] = useState(50);
   const [progress, setProgress] = useState<TrainProgress | null>(null);
   const [isTraining, setIsTraining] = useState(false);
@@ -40,24 +33,19 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
   const [isPredicting, setIsPredicting] = useState(false);
   const [predictError, setPredictError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [globalModelName, setGlobalModelName] = useState("global_vc_model");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [predictImageUrl, setPredictImageUrl] = useState<string | null>(null);
-  const [globalSessions, setGlobalSessions] = useState("");
-  const [globalModelName, setGlobalModelName] = useState("global_vc_model");
 
   const loadModels = useCallback(() => {
     listModels().then(setModels).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    loadModels();
-  }, [loadModels]);
+  useEffect(() => { loadModels(); }, [loadModels]);
 
   useEffect(() => {
-    if (models.length > 0 && !selectedModel) {
-      setSelectedModel(models[0].name);
-    }
+    if (models.length > 0 && !selectedModel) setSelectedModel(models[0].name);
   }, [models, selectedModel]);
 
   const startPolling = useCallback(() => {
@@ -88,7 +76,7 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
     try {
       if (isGlobal) {
         await trainGlobalModel({
-          sessions: globalSessions || undefined,
+          sessions: preselectedSessions || undefined,
           epochs,
           model_name: globalModelName,
         });
@@ -127,8 +115,7 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
   };
 
   const pct = progress && progress.total_epochs > 0
-    ? Math.round((progress.epoch / progress.total_epochs) * 100)
-    : 0;
+    ? Math.round((progress.epoch / progress.total_epochs) * 100) : 0;
 
   const lossData = progress?.train_losses?.map((tl, i) => ({
     epoch: i + 1,
@@ -137,92 +124,69 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
   })) ?? [];
 
   const scatterData = progress?.preds?.map((p, i) => ({
-    x: progress.true?.[i] ?? 0,
-    y: p,
+    x: progress.true?.[i] ?? 0, y: p,
   })) ?? [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
 
-      {/* ── HERO ── */}
-      <div style={{
-        background: "linear-gradient(135deg, rgba(0,255,255,0.06) 0%, rgba(59,130,246,0.06) 100%)",
-        border: `1px solid rgba(0,255,255,0.2)`,
-        borderRadius: 16, padding: 28,
-        display: "flex", alignItems: "center", gap: 24,
-      }}>
-        <div style={{ fontSize: 52, lineHeight: 1 }}>🌊</div>
-        <div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.accent, letterSpacing: "-0.5px" }}>
-            Prédiction de Vc
-          </div>
-          <div style={{ fontSize: 14, color: C.muted, marginTop: 4, maxWidth: 460 }}>
-            Entraîne un ResNet18 sur vos annotations pour estimer la{" "}
-            <span style={{ color: C.text, fontWeight: 600 }}>vitesse du courant marin (cm/s)</span>{" "}
-            directement depuis une image de câble immergé.
-          </div>
-        </div>
-      </div>
-
-      {/* ── SECTION ENTRAÎNEMENT ── */}
-      <Section icon="🧠" title="Entraîner un modèle Vc">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "flex-end", marginBottom: 16 }}>
+      {/* HERO */}
+      {!isGlobal && (
+        <div style={{
+          background: "linear-gradient(135deg, rgba(0,255,255,0.06) 0%, rgba(59,130,246,0.06) 100%)",
+          border: `1px solid rgba(0,255,255,0.2)`, borderRadius: 16, padding: 24,
+          display: "flex", alignItems: "center", gap: 20,
+        }}>
+          <div style={{ fontSize: 48, lineHeight: 1 }}>🌊</div>
           <div>
-            <label style={labelStyle}>Époques d'entraînement</label>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                type="number"
-                value={epochs}
-                min={5}
-                max={300}
-                onChange={(e) => setEpochs(parseInt(e.target.value) || 50)}
-                style={{ width: 90 }}
-              />
-              <span style={{ fontSize: 12, color: C.muted }}>
-                (50 recommandé pour un premier test)
-              </span>
+            <div style={{ fontSize: 20, fontWeight: 700, color: C.accent }}>Prédiction de Vc</div>
+            <div style={{ fontSize: 13, color: C.muted, marginTop: 4, maxWidth: 420 }}>
+              Entraîne un ResNet18 pour estimer la{" "}
+              <span style={{ color: C.text, fontWeight: 600 }}>vitesse du courant marin (cm/s)</span>{" "}
+              depuis une image de câble immergé.
             </div>
           </div>
-          <button
-            className="btn btn-primary"
-            onClick={handleTrain}
-            disabled={isTraining}
-            style={{ height: 38, paddingLeft: 20, paddingRight: 20, whiteSpace: "nowrap" }}
-          >
-            {isTraining ? "⏳ Entraînement..." : "🧠 Lancer l'entraînement"}
+        </div>
+      )}
+
+      {/* SECTION ENTRAÎNEMENT */}
+      <Section icon="🧠" title="Entraîner un modèle Vc">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "flex-end", marginBottom: isGlobal ? 14 : 0 }}>
+          <div>
+            <label style={labelStyle}>Époques</label>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="number" value={epochs} min={5} max={300}
+                onChange={e => setEpochs(parseInt(e.target.value) || 50)}
+                style={{ width: 80 }} />
+              <span style={{ fontSize: 11, color: C.muted }}>(50 recommandé)</span>
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={handleTrain} disabled={isTraining}
+            style={{ height: 36, paddingLeft: 18, paddingRight: 18 }}>
+            {isTraining ? "⏳ En cours..." : "🧠 Lancer l'entraînement"}
           </button>
         </div>
 
         {isGlobal && (
-          <div style={{ marginBottom: 16 }}>
-            <label style={labelStyle}>Sessions à inclure (vide = toutes)</label>
-            <input
-              type="text"
-              value={globalSessions}
-              onChange={(e) => setGlobalSessions(e.target.value)}
-              placeholder="ex: session1,session2 — vide = toutes"
-              style={{ width: "100%" }}
-            />
-            <div style={{ marginTop: 12 }}>
-              <label style={labelStyle}>Nom du modèle</label>
-              <input
-                type="text"
-                value={globalModelName}
-                onChange={(e) => setGlobalModelName(e.target.value)}
-                placeholder="global_vc_model"
-                style={{ width: 240 }}
-              />
-            </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={labelStyle}>Nom du modèle</label>
+            <input type="text" value={globalModelName} onChange={e => setGlobalModelName(e.target.value)}
+              placeholder="global_vc_model" style={{ width: 260 }} />
+            {preselectedSessions && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+                Sessions : <span style={{ color: C.accent }}>{preselectedSessions}</span>
+              </div>
+            )}
           </div>
         )}
 
         {/* Progression */}
         {progress && progress.status !== "idle" && (
           <div style={{
-            background: C.surface2, borderRadius: 12, padding: 20,
-            border: `1px solid ${C.border}`, marginTop: 4,
+            background: C.surface2, borderRadius: 12, padding: 18,
+            border: `1px solid ${C.border}`, marginTop: 14,
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
                 {progress.status === "starting" && "⏳ Démarrage..."}
                 {progress.status === "running" && `Époque ${progress.epoch} / ${progress.total_epochs}`}
@@ -233,9 +197,8 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
                 <span style={{ fontSize: 13, color: C.accent, fontWeight: 700 }}>{pct}%</span>
               )}
             </div>
-
             {(progress.status === "running" || progress.status === "done") && (
-              <div style={{ background: C.border, borderRadius: 4, height: 6, marginBottom: 14, overflow: "hidden" }}>
+              <div style={{ background: C.border, borderRadius: 4, height: 6, marginBottom: 12, overflow: "hidden" }}>
                 <div style={{
                   height: "100%", borderRadius: 4,
                   width: `${progress.status === "done" ? 100 : pct}%`,
@@ -246,52 +209,43 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
                 }} />
               </div>
             )}
-
             {progress.status === "error" && (
               <div style={{ color: C.red, fontSize: 13, padding: "8px 12px", background: "rgba(255,68,68,0.08)", borderRadius: 8 }}>
                 {progress.error}
               </div>
             )}
-
             {progress.status === "done" && progress.mae !== undefined && (
               <>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
-                  <MetricCard label="MAE" value={`${progress.mae} cm/s`} color={C.accent} />
-                  <MetricCard label="RMSE" value={`${progress.rmse} cm/s`} color={C.blue} />
-                  <MetricCard
-                    label="Dataset"
-                    value={`${progress.n_train}+${progress.n_val}`}
-                    color={C.green}
-                    sub="train + val"
-                  />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+                  <MCard label="MAE" value={`${progress.mae} cm/s`} color={C.accent} />
+                  <MCard label="RMSE" value={`${progress.rmse} cm/s`} color={C.blue} />
+                  <MCard label="Dataset" value={`${progress.n_train}+${progress.n_val}`} color={C.green} sub="train+val" />
                 </div>
-
                 {lossData.length > 1 && (
-                  <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.muted, marginBottom: 10 }}>Courbe de loss</div>
-                    <ResponsiveContainer width="100%" height={200}>
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Courbe de loss</div>
+                    <ResponsiveContainer width="100%" height={180}>
                       <LineChart data={lossData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                        <XAxis dataKey="epoch" tick={{ fontSize: 10, fill: C.muted }} />
-                        <YAxis tick={{ fontSize: 10, fill: C.muted }} />
-                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} />
-                        <Legend wrapperStyle={{ fontSize: 12, color: C.muted }} />
+                        <XAxis dataKey="epoch" tick={{ fontSize: 9, fill: C.muted }} />
+                        <YAxis tick={{ fontSize: 9, fill: C.muted }} />
+                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11 }} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Line type="monotone" dataKey="Train Loss" stroke={C.accent} dot={false} strokeWidth={2} />
                         <Line type="monotone" dataKey="Val Loss" stroke={C.orange} dot={false} strokeWidth={2} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                 )}
-
                 {scatterData.length > 0 && (
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: C.muted, marginBottom: 10 }}>Vc prédit vs réel (cm/s)</div>
-                    <ResponsiveContainer width="100%" height={200}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Vc prédit vs réel</div>
+                    <ResponsiveContainer width="100%" height={180}>
                       <ScatterChart>
                         <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                        <XAxis dataKey="x" name="Vc réel" tick={{ fontSize: 10, fill: C.muted }} label={{ value: "Réel", position: "insideBottom", offset: -2, fontSize: 10, fill: C.muted }} />
-                        <YAxis dataKey="y" name="Vc prédit" tick={{ fontSize: 10, fill: C.muted }} label={{ value: "Prédit", angle: -90, position: "insideLeft", fontSize: 10, fill: C.muted }} />
-                        <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, fontSize: 12 }} />
+                        <XAxis dataKey="x" tick={{ fontSize: 9, fill: C.muted }} />
+                        <YAxis dataKey="y" tick={{ fontSize: 9, fill: C.muted }} />
+                        <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.border}`, fontSize: 11 }} />
                         <Scatter data={scatterData} fill={C.green} opacity={0.8} />
                       </ScatterChart>
                     </ResponsiveContainer>
@@ -303,112 +257,74 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
         )}
       </Section>
 
-      {/* ── SECTION PRÉDICTION ── */}
+      {/* SECTION PRÉDICTION */}
       <Section icon="🔍" title="Prédire Vc sur une image">
         {models.length === 0 ? (
           <div style={{
             padding: 24, textAlign: "center", color: C.muted, fontSize: 13,
             background: C.surface2, borderRadius: 12, border: `1px dashed ${C.border}`,
           }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>🤖</div>
             Aucun modèle disponible.<br />
             <span style={{ color: C.text }}>Annotez des images avec <code style={{ color: C.accent }}>current_speed_cm_s</code> puis cliquez Entraîner.</span>
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-            {/* Colonne gauche : upload + modèle */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div>
-                <label style={labelStyle}>Modèle à utiliser</label>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  style={{ width: "100%" }}
-                >
-                  {models.map((m) => (
+                <label style={labelStyle}>Modèle</label>
+                <select value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ width: "100%" }}>
+                  {models.map(m => (
                     <option key={m.name} value={m.name}>
                       {m.is_global ? "🌍 " : "📂 "}{m.name} ({m.size_mb} MB)
                     </option>
                   ))}
                 </select>
               </div>
-
               <div>
                 <label style={labelStyle}>Image à analyser</label>
-                <div
-                  className={`drop-zone ${dragOver ? "drag-over" : ""}`}
-                  style={{ minHeight: 100, cursor: "pointer" }}
-                  onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                <div className={`drop-zone ${dragOver ? "drag-over" : ""}`} style={{ minHeight: 90, cursor: "pointer" }}
+                  onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault(); setDragOver(false);
-                    const f = e.dataTransfer.files[0];
-                    if (f) handlePredictFile(f);
-                  }}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    hidden
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handlePredictFile(f); }}
-                  />
+                  onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handlePredictFile(f); }}
+                  onClick={() => fileInputRef.current?.click()}>
+                  <input ref={fileInputRef} type="file" accept="image/*" hidden
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handlePredictFile(f); }} />
                   {predictImageUrl ? (
-                    <img
-                      src={predictImageUrl}
-                      alt="prévisualisation"
-                      style={{ maxWidth: "100%", maxHeight: 140, borderRadius: 8, objectFit: "contain" }}
-                    />
+                    <img src={predictImageUrl} alt="preview"
+                      style={{ maxWidth: "100%", maxHeight: 120, borderRadius: 8, objectFit: "contain" }} />
                   ) : (
-                    <>
-                      <div style={{ fontSize: 28, marginBottom: 6 }}>📷</div>
-                      <div style={{ fontSize: 13, color: C.muted }}>Glissez une image ici ou cliquez</div>
-                    </>
+                    <><div style={{ fontSize: 24, marginBottom: 4 }}>📷</div><div style={{ fontSize: 12, color: C.muted }}>Glissez ou cliquez</div></>
                   )}
                 </div>
               </div>
-
-              <button
-                className="btn btn-primary"
-                onClick={handlePredict}
+              <button className="btn btn-primary" onClick={handlePredict}
                 disabled={!predictFile || !selectedModel || isPredicting}
-                style={{ justifyContent: "center" }}
-              >
-                {isPredicting ? "⏳ Analyse en cours..." : "🔍 Analyser"}
+                style={{ justifyContent: "center" }}>
+                {isPredicting ? "⏳ Analyse..." : "🔍 Analyser"}
               </button>
             </div>
-
-            {/* Colonne droite : résultat */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
               {predictResult !== null ? (
                 <div style={{
                   background: "linear-gradient(135deg, rgba(0,255,255,0.1), rgba(0,255,136,0.1))",
-                  border: `2px solid ${C.accent}`,
-                  borderRadius: 16, padding: 32, textAlign: "center", width: "100%",
+                  border: `2px solid ${C.accent}`, borderRadius: 16, padding: 28,
+                  textAlign: "center", width: "100%",
                 }}>
-                  <div style={{ fontSize: 13, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
-                    Vitesse estimée
-                  </div>
-                  <div style={{ fontSize: 52, fontWeight: 800, color: C.accent, lineHeight: 1, marginBottom: 8 }}>
-                    {predictResult}
-                  </div>
-                  <div style={{ fontSize: 20, color: C.text, fontWeight: 500 }}>cm/s</div>
-                  <div style={{ marginTop: 16, fontSize: 12, color: C.muted }}>
-                    Modèle : <span style={{ color: C.text }}>{selectedModel}</span>
-                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>Vitesse estimée</div>
+                  <div style={{ fontSize: 48, fontWeight: 900, color: C.accent, lineHeight: 1, marginBottom: 6 }}>{predictResult}</div>
+                  <div style={{ fontSize: 18, color: C.text, fontWeight: 500 }}>cm/s</div>
+                  <div style={{ marginTop: 12, fontSize: 11, color: C.muted }}>Modèle : <span style={{ color: C.text }}>{selectedModel}</span></div>
                 </div>
               ) : predictError ? (
                 <div style={{
                   background: "rgba(255,68,68,0.08)", border: `1px solid rgba(255,68,68,0.3)`,
                   borderRadius: 12, padding: 20, textAlign: "center", color: C.red, fontSize: 13, width: "100%",
-                }}>
-                  ❌ {predictError}
-                </div>
+                }}>❌ {predictError}</div>
               ) : (
                 <div style={{ textAlign: "center", color: C.muted, fontSize: 13 }}>
-                  <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>🌊</div>
-                  Le résultat apparaîtra ici
+                  <div style={{ fontSize: 36, marginBottom: 10, opacity: 0.25 }}>🌊</div>
+                  Résultat ici
                 </div>
               )}
             </div>
@@ -416,26 +332,30 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
         )}
       </Section>
 
-      {/* ── MODÈLES DISPONIBLES ── */}
-      {models.length > 0 && (
+      {/* MODÈLES + TÉLÉCHARGEMENT (onglet session seulement, pas global) */}
+      {!isGlobal && models.length > 0 && (
         <Section icon="📦" title="Modèles entraînés">
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {models.map((m) => (
+            {models.map(m => (
               <div key={m.name} style={{
                 display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "12px 16px",
-                background: C.surface2, borderRadius: 10, border: `1px solid ${C.border}`,
+                padding: "10px 14px", background: C.bg, borderRadius: 10, border: `1px solid ${C.border}`,
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 18 }}>{m.is_global ? "🌍" : "📂"}</span>
+                  <span style={{ fontSize: 16 }}>{m.is_global ? "🌍" : "📂"}</span>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{m.name}</div>
-                    <div style={{ fontSize: 11, color: C.muted }}>Modifié {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>{m.size_mb} MB — {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
                   </div>
                 </div>
-                <span style={{ fontSize: 12, color: C.muted, background: C.surface, padding: "3px 10px", borderRadius: 20, border: `1px solid ${C.border}` }}>
-                  {m.size_mb} MB
-                </span>
+                <a
+                  href={`http://localhost:8000/api/models/${encodeURIComponent(m.filename)}/download`}
+                  className="btn btn-secondary"
+                  style={{ fontSize: 11, textDecoration: "none", padding: "4px 12px" }}
+                  download={m.filename}
+                >
+                  ⬇ Télécharger
+                </a>
               </div>
             ))}
           </div>
@@ -445,36 +365,27 @@ export default function AIPanel({ sessionName, isGlobal = false }: AIPanelProps)
   );
 }
 
-// ── Sous-composants ───────────────────────────────────────────────────────────
-
 function Section({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) {
   return (
-    <div style={{
-      background: "#161B22",
-      border: "1px solid #30363D",
-      borderRadius: 14, overflow: "hidden",
-    }}>
+    <div style={{ background: "#161B22", border: "1px solid #30363D", borderRadius: 14, overflow: "hidden" }}>
       <div style={{
-        padding: "14px 20px", borderBottom: "1px solid #30363D",
-        display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 20px", borderBottom: "1px solid #30363D",
+        display: "flex", alignItems: "center", gap: 8,
         background: "rgba(255,255,255,0.02)",
       }}>
-        <span style={{ fontSize: 18 }}>{icon}</span>
-        <span style={{ fontWeight: 700, fontSize: 15, color: "#E6EDF3" }}>{title}</span>
+        <span style={{ fontSize: 16 }}>{icon}</span>
+        <span style={{ fontWeight: 700, fontSize: 14, color: "#E6EDF3" }}>{title}</span>
       </div>
       <div style={{ padding: 20 }}>{children}</div>
     </div>
   );
 }
 
-function MetricCard({ label, value, color, sub }: { label: string; value: string; color: string; sub?: string }) {
+function MCard({ label, value, color, sub }: { label: string; value: string; color: string; sub?: string }) {
   return (
-    <div style={{
-      background: "#0D1117", borderRadius: 10, padding: "14px 16px",
-      border: "1px solid #30363D", textAlign: "center",
-    }}>
-      <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
-      <div style={{ fontSize: 12, color: "#8B949E", marginTop: 2 }}>{label}</div>
+    <div style={{ background: "#0D1117", borderRadius: 8, padding: "12px 14px", border: "1px solid #30363D", textAlign: "center" }}>
+      <div style={{ fontSize: 19, fontWeight: 800, color }}>{value}</div>
+      <div style={{ fontSize: 11, color: "#8B949E", marginTop: 2 }}>{label}</div>
       {sub && <div style={{ fontSize: 10, color: "#8B949E" }}>{sub}</div>}
     </div>
   );
@@ -482,5 +393,5 @@ function MetricCard({ label, value, color, sub }: { label: string; value: string
 
 const labelStyle: React.CSSProperties = {
   display: "block", fontSize: 12, color: "#8B949E",
-  marginBottom: 6, fontWeight: 500,
+  marginBottom: 5, fontWeight: 500,
 };

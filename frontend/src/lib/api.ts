@@ -171,3 +171,6 @@ export const predictVc = (modelName: string, file: File): Promise<{ vitesse_esti
   fd.append("file", file);
   return req("/api/predict", { method: "POST", body: fd });
 };
+// Téléchargement direct d'un modèle
+export const modelDownloadUrl = (filename: string) =>
+  `${BASE}/api/models/${encodeURIComponent(filename)}/download`;
