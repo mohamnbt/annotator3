@@ -445,7 +445,7 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
         raise HTTPException(status_code=500, detail=f"Erreur YOLO: {str(e)}")
 
 
-# ─── Video Extraction (FFmpeg) ──────────────────────────────────────────────────────────
+# ─── Video Extraction (FFmpeg) ─────────────────────────────────────────────────────────
 
 def extract_frames_ffmpeg_bg(video_path: str, output_dir: str, video_stem: str,
                               frame_interval: int, session_name: str):
@@ -1066,8 +1066,8 @@ async def get_global_train_progress():
 @app.get("/api/train/global/angle-vc-data")
 async def get_angle_vc_data():
     """
-    Retourne la liste de {theta, vc} pour toutes les annotations de toutes les sessions.
-    Utilisé pour le graphique Vc = f(θ) avec droite de régression.
+    Retourne [{theta, vc}] pour toutes les annotations de toutes les sessions.
+    Utilisé pour le graphique Vc = f(θ) avec droite de régression PCA.
     """
     result = []
     if not DATA_DIR.exists():
