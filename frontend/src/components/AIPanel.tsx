@@ -72,7 +72,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
       : `/api/train/${encodeURIComponent(sessionName)}/angle-vc-data`;
     fetch(url)
       .then(r => r.ok ? r.json() : [])
-      .then(d => setAngleVcData(d))
+      .then(d => Array.isArray(d) && d.length > 0 ? setAngleVcData(d) : null)
       .catch(() => {});
   }, [sessionName, isGlobal]);
 
@@ -90,6 +90,10 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
           ? await getGlobalTrainProgress()
           : await getTrainProgress(sessionName);
         setProgress(p);
+        // Mise à jour des données θ/Vc depuis la progression si disponibles
+        if (p.angle_vc_pts && Array.isArray(p.angle_vc_pts) && p.angle_vc_pts.length > 0) {
+          setAngleVcData(p.angle_vc_pts);
+        }
         if (p.status === "done" || p.status === "error") {
           clearInterval(pollRef.current!);
           setIsTraining(false);
@@ -173,14 +177,21 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const diagPts = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
 
   // ── Vc = f(θ) ────────────────────────────────────────────────────────────────
-  const annotPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
+  // Source prioritaire : angle_vc_pts dans la progression (injecté par le backend)
+  // Fallback : angleVcData chargé séparément
+  const rawAngleVc: { theta: number; vc: number }[] =
+    (progress?.angle_vc_pts && progress.angle_vc_pts.length > 0)
+      ? progress.angle_vc_pts
+      : angleVcData;
+
+  const annotPts = rawAngleVc.map(d => ({ x: d.theta, y: d.vc }));
   const regAnnot = linReg(annotPts);
 
-  // Points prédits par le modèle : on associe theta_i aux preds du dernier entraînement
+  // Points prédits par le modèle NN (associe theta_i aux preds)
   const modelPredPts: { x: number; y: number }[] = [];
-  if (progress?.preds && progress.preds.length > 0 && angleVcData.length > 0) {
+  if (progress?.preds && progress.preds.length > 0 && rawAngleVc.length > 0) {
     const nPreds = progress.preds.length;
-    angleVcData.slice(-nPreds).forEach((d, i) => {
+    rawAngleVc.slice(-nPreds).forEach((d, i) => {
       modelPredPts.push({ x: d.theta, y: parseFloat((progress.preds![i]).toFixed(2)) });
     });
   }
@@ -195,6 +206,9 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
 
   const regAnnotLine = annotPts.length >= 2 ? regressionLine(regAnnot.a, regAnnot.b, thMin, thMax) : [];
   const regModelLine = modelPredPts.length >= 2 ? regressionLine(regModel.a, regModel.b, thMin, thMax) : [];
+
+  // Afficher le graphe Vc=f(θ) dès qu'on a des données ET que l'entraînement est terminé
+  const showVcTheta = annotPts.length >= 2 && progress?.status === "done";
 
   const TS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11 };
 
@@ -318,7 +332,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                   <div style={{ marginBottom: 20 }}>
                     <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4 }}>Vc prédit vs réel (cm/s)</div>
                     <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
-                      Chaque point = une image de validation · droite pointillée = prédiction parfaite (y = x)
+                      Chaque point = une image de validation · droite pointillée = prédiction parfaite (y = x)
                     </div>
                     <ResponsiveContainer width="100%" height={220}>
                       <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
@@ -362,19 +376,19 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                 )}
 
                 {/* Graphique Vc = f(θ) */}
-                {annotPts.length >= 3 && (
+                {showVcTheta ? (
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4 }}>Vc = f(θ) — angle PCA du câble</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4 }}>Vc = f(θ) — angle PCA du câble</div>
                     <div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>
                       <span style={{ color: C.accent }}>● Annotations</span>
                       {" : Vc = "}{regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s
-                      <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regAnnot.r2.toFixed(3)})</span>
+                      <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regAnnot.r2.toFixed(3)})</span>
                     </div>
                     {regModelLine.length > 0 && (
                       <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
                         <span style={{ color: C.green }}>● Modèle NN</span>
                         {" : Vc = "}{regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s
-                        <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regModel.r2.toFixed(3)})</span>
+                        <span style={{ color: C.muted, marginLeft: 6 }}>(R² = {regModel.r2.toFixed(3)})</span>
                       </div>
                     )}
                     <ResponsiveContainer width="100%" height={240}>
@@ -437,7 +451,11 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                       </ScatterChart>
                     </ResponsiveContainer>
                   </div>
-                )}
+                ) : progress?.status === "done" && annotPts.length < 2 ? (
+                  <div style={{ fontSize: 12, color: C.muted, padding: "10px 0", opacity: 0.7 }}>
+                    ⚠️ Vc = f(θ) non disponible — aucune annotation avec <code style={{ color: C.accent }}>cable_angle_deg</code> et <code style={{ color: C.accent }}>current_speed_cm_s</code> trouvée.
+                  </div>
+                ) : null}
               </>
             )}
           </div>
