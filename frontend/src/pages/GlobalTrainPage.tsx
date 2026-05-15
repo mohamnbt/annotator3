@@ -6,7 +6,7 @@ import {
 } from "../lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ScatterChart, Scatter, ResponsiveContainer,
+  ComposedChart, Scatter, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 
 const TS = {
@@ -31,12 +31,10 @@ function linReg(pts: {x: number, y: number}[]) {
   return { a, b, r2 };
 }
 
-// Génère N points équidistants sur la droite y = a*x + b entre xMin et xMax
-function regressionLine(a: number, b: number, xMin: number, xMax: number, n = 50) {
-  return Array.from({ length: n }, (_, i) => {
-    const x = xMin + (xMax - xMin) * i / (n - 1);
-    return { x: parseFloat(x.toFixed(3)), y: parseFloat((a * x + b).toFixed(3)) };
-  });
+// Ticks uniformément espacés entre min et max
+function niceTicks(min: number, max: number, n = 6): number[] {
+  const step = (max - min) / (n - 1);
+  return Array.from({ length: n }, (_, i) => parseFloat((min + step * i).toFixed(2)));
 }
 
 export default function GlobalTrainPage() {
@@ -127,57 +125,63 @@ export default function GlobalTrainPage() {
     epoch: i + 1, train: tl, val: progress.val_losses?.[i] ?? 0,
   })) ?? [];
 
-  // ── Scatter Prédit vs Réel — axes {x, y} pour orthonormé ──────────────────
-  // x = Vc réel, y = Vc prédit ; même domaine sur les deux axes
-  const scatterData = progress?.preds?.map((p, i) => ({
+  // ── Scatter Prédit vs Réel ─────────────────────────────────────────────────
+  // On trie par Vc réel pour que l'axe X soit ordonné
+  const scatterRaw = progress?.preds?.map((p, i) => ({
     x: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
     y: parseFloat(p.toFixed(2)),
   })) ?? [];
+  const scatterData = [...scatterRaw].sort((a, b) => a.x - b.x);
 
   const allVals = scatterData.flatMap(d => [d.x, d.y]);
   const rawMin = allVals.length > 0 ? Math.min(...allVals) : 0;
   const rawMax = allVals.length > 0 ? Math.max(...allVals) : 40;
-  const marginScatter = (rawMax - rawMin) * 0.12 + 1;
-  const axMin = parseFloat((rawMin - marginScatter).toFixed(1));
-  const axMax = parseFloat((rawMax + marginScatter).toFixed(1));
-  // Droite y=x parfaite
-  const diagPts = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
+  const marginSc = (rawMax - rawMin) * 0.12 + 1;
+  const axMin = parseFloat((rawMin - marginSc).toFixed(1));
+  const axMax = parseFloat((rawMax + marginSc).toFixed(1));
+  const scTicks = niceTicks(axMin, axMax, 6);
 
-  // ── Graphique Vc = f(θ) ────────────────────────────────────────────────────
-  // Nuage annoté (toutes sessions)
-  const annotPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
+  // ── Graphique Vc = f(θ) — nuage annoté + modèle NN ─────────────────────────
+  const annotPts = [...angleVcData]
+    .sort((a, b) => a.theta - b.theta)
+    .map(d => ({ x: d.theta, y: d.vc }));
 
-  // Régression sur annotations
   const regAnnot = linReg(annotPts);
 
-  // Régression sur les prédictions du modèle entraîné
-  // On associe chaque prédiction à son theta via angleVcData (même ordre)
-  // angleVcData et progress.preds correspondent aux images de val dans le même ordre
-  // -> on trace une régression linéaire Vc_prédit = f(theta) à partir des paires (theta_i, pred_i)
   const modelPredPts: {x: number, y: number}[] = [];
   if (progress?.preds && progress.preds.length > 0 && angleVcData.length > 0) {
-    // On prend les N derniers points d'angleVcData qui correspondent aux images de val
     const nPreds = progress.preds.length;
     const slice = angleVcData.slice(-nPreds);
     slice.forEach((d, i) => {
       modelPredPts.push({ x: d.theta, y: parseFloat((progress.preds![i]).toFixed(2)) });
     });
+    modelPredPts.sort((a, b) => a.x - b.x);
   }
   const regModel = linReg(modelPredPts);
 
-  const allThetaVals = [...annotPts, ...modelPredPts].map(p => p.x);
-  const allVcVals = [...annotPts, ...modelPredPts].map(p => p.y);
-  const thetaMin = allThetaVals.length > 0 ? parseFloat((Math.min(...allThetaVals) - 1).toFixed(1)) : 0;
-  const thetaMax = allThetaVals.length > 0 ? parseFloat((Math.max(...allThetaVals) + 1).toFixed(1)) : 90;
-  const vcMin   = allVcVals.length > 0   ? parseFloat((Math.min(...allVcVals) - 2).toFixed(1)) : 0;
-  const vcMax   = allVcVals.length > 0   ? parseFloat((Math.max(...allVcVals) + 2).toFixed(1)) : 40;
+  const allTheta = [...annotPts, ...modelPredPts].map(p => p.x);
+  const allVc    = [...annotPts, ...modelPredPts].map(p => p.y);
+  const tMin = allTheta.length > 0 ? parseFloat((Math.min(...allTheta) - 2).toFixed(1)) : 0;
+  const tMax = allTheta.length > 0 ? parseFloat((Math.max(...allTheta) + 2).toFixed(1)) : 90;
+  const vMin = allVc.length > 0   ? parseFloat((Math.min(...allVc) - 2).toFixed(1)) : 0;
+  const vMax = allVc.length > 0   ? parseFloat((Math.max(...allVc) + 2).toFixed(1)) : 40;
+  const tTicks = niceTicks(tMin, tMax, 7);
+  const vTicks = niceTicks(vMin, vMax, 7);
 
-  // Droites de régression (50 points pour un rendu lisse)
-  const regAnnotLine = regressionLine(regAnnot.a, regAnnot.b, thetaMin, thetaMax);
-  const regModelLine = modelPredPts.length >= 2
-    ? regressionLine(regModel.a, regModel.b, thetaMin, thetaMax)
-    : [];
+  // Droite régression annoté : 2 points suffisent pour une droite
+  const regAnnotLine = [
+    { x: tMin, yAnnot: parseFloat((regAnnot.a * tMin + regAnnot.b).toFixed(2)) },
+    { x: tMax, yAnnot: parseFloat((regAnnot.a * tMax + regAnnot.b).toFixed(2)) },
+  ];
+  // Droite modèle NN
+  const regModelLine = modelPredPts.length >= 2 ? [
+    { x: tMin, yModel: parseFloat((regModel.a * tMin + regModel.b).toFixed(2)) },
+    { x: tMax, yModel: parseFloat((regModel.a * tMax + regModel.b).toFixed(2)) },
+  ] : [];
 
+  // Merge des datasets pour ComposedChart
+  // Pour Vc=f(θ) on doit avoir un tableau commun indexé par x
+  // On utilise deux Scatter séparés dans ComposedChart (ils partagent les mêmes axes numériques)
   const totalAnnotated = sessions.reduce((acc, s) =>
     acc + s.images.filter(i => i.status === "annotated").length, 0);
 
@@ -225,7 +229,7 @@ export default function GlobalTrainPage() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-dim mb-1.5">Epochs</label>
+              <label className="block text-xs text-dim mb-1.5">Époques</label>
               <input type="number" value={epochs} onChange={e => setEpochs(parseInt(e.target.value) || 10)} min={1} max={500} />
             </div>
             <div>
@@ -306,8 +310,7 @@ export default function GlobalTrainPage() {
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={lossData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-                <XAxis
-                  dataKey="epoch"
+                <XAxis dataKey="epoch"
                   label={{ value: "Époque", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--color-text-dim)" }}
                   tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
                 />
@@ -320,150 +323,137 @@ export default function GlobalTrainPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Scatter orthonormé Vc prédit vs Réel */}
+          {/* Vc prédit vs réel — ComposedChart orthonormé */}
           {scatterData.length > 0 && (
             <div className="card">
               <h4 className="text-sm font-bold mb-1">🎯 Vc prédit vs réel (cm/s)</h4>
               <p className="text-[10px] text-dim mb-3">
-                Chaque point = une image · droite pointillée = prédiction parfaite (y = x)
+                Chaque point = une image · droite pointillée = prédiction parfaite (y = x)
               </p>
-              <ResponsiveContainer width="100%" height={240}>
-                {/* Les données sont {x: vc_reel, y: vc_predit} — même domaine sur les 2 axes */}
-                <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
+              <ResponsiveContainer width="100%" height={260}>
+                <ComposedChart margin={{ top: 10, right: 20, bottom: 35, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
-                    dataKey="x"
                     type="number"
-                    name="Vc réel"
+                    dataKey="x"
                     domain={[axMin, axMax]}
-                    tickCount={6}
-                    label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                    ticks={scTicks}
+                    tickFormatter={v => v.toFixed(1)}
+                    label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -20, fontSize: 11, fill: "var(--color-text-dim)" }}
                     tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                    axisLine={{ stroke: "var(--color-border)" }}
-                    tickLine={false}
+                    axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
                   />
                   <YAxis
-                    dataKey="y"
                     type="number"
-                    name="Vc prédit"
+                    dataKey="y"
                     domain={[axMin, axMax]}
-                    tickCount={6}
+                    ticks={scTicks}
+                    tickFormatter={v => v.toFixed(1)}
                     label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
                     tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                    axisLine={{ stroke: "var(--color-border)" }}
-                    tickLine={false}
+                    axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
                   />
-                  <Tooltip
-                    contentStyle={TS}
-                    formatter={(v: any, name: string) => [`${v} cm/s`, name]}
+                  <Tooltip contentStyle={TS} formatter={(v: any) => [`${v} cm/s`]} />
+                  {/* Diagonale y=x via ReferenceLine */}
+                  <ReferenceLine
+                    segment={[{ x: axMin, y: axMin }, { x: axMax, y: axMax }]}
+                    stroke="#888" strokeDasharray="6 3" strokeWidth={1.5}
+                    ifOverflow="extendDomain"
                   />
-                  {/* Diagonale y=x */}
-                  <Scatter
-                    data={diagPts}
-                    line={{ stroke: "#888", strokeDasharray: "6 3", strokeWidth: 1.5 }}
-                    shape={() => null as any}
-                    legendType="none"
-                    name="y=x"
-                  />
-                  {/* Points mesures */}
+                  {/* Nuage de points mesures */}
                   <Scatter
                     data={scatterData}
                     fill="var(--color-accent)"
                     opacity={0.85}
                     name="Mesures"
                   />
-                </ScatterChart>
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           )}
         </div>
       )}
 
-      {/* Graphique Vc = f(θ) */}
+      {/* Graphique Vc = f(θ) — toujours visible dès qu'il y a des données */}
       {annotPts.length >= 3 && (
         <div className="card animate-fade-in">
-          <h4 className="text-sm font-bold mb-1">📐 Vc = f(θ) — angle PCA du câble</h4>
+          <h4 className="text-sm font-bold mb-1">📐 Vc = f(θ) — angle PCA du câble</h4>
           <p className="text-[10px] text-dim mb-1">
             <span className="text-accent font-mono">🔵 Annotations : Vc = {regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s</span>
-            <span className="ml-2 text-dim">(R² = {regAnnot.r2.toFixed(3)})</span>
+            <span className="ml-2 text-dim">(R² = {regAnnot.r2.toFixed(3)})</span>
           </p>
           {regModelLine.length > 0 && (
             <p className="text-[10px] text-dim mb-3">
               <span className="text-green font-mono">🟢 Modèle NN : Vc = {regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s</span>
-              <span className="ml-2 text-dim">(R² = {regModel.r2.toFixed(3)})</span>
+              <span className="ml-2 text-dim">(R² = {regModel.r2.toFixed(3)})</span>
             </p>
           )}
-          <ResponsiveContainer width="100%" height={300}>
-            <ScatterChart margin={{ top: 10, right: 20, bottom: 35, left: 20 }}>
+          <ResponsiveContainer width="100%" height={320}>
+            <ComposedChart margin={{ top: 10, right: 20, bottom: 40, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
-                dataKey="x"
                 type="number"
-                name="θ"
-                domain={[thetaMin, thetaMax]}
-                tickCount={8}
-                label={{ value: "θ (°)", position: "insideBottom", offset: -20, fontSize: 11, fill: "var(--color-text-dim)" }}
+                dataKey="x"
+                domain={[tMin, tMax]}
+                ticks={tTicks}
+                tickFormatter={v => v.toFixed(1)}
+                label={{ value: "θ (°)", position: "insideBottom", offset: -25, fontSize: 11, fill: "var(--color-text-dim)" }}
                 tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                axisLine={{ stroke: "var(--color-border)" }}
-                tickLine={false}
+                axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
               />
               <YAxis
-                dataKey="y"
                 type="number"
-                name="Vc"
-                domain={[vcMin, vcMax]}
-                tickCount={7}
+                dataKey="y"
+                domain={[vMin, vMax]}
+                ticks={vTicks}
+                tickFormatter={v => v.toFixed(1)}
                 label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
                 tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                axisLine={{ stroke: "var(--color-border)" }}
-                tickLine={false}
+                axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
               />
               <Tooltip
                 contentStyle={TS}
                 formatter={(v: any, name: string) =>
-                  name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
+                  name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, name]
                 }
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
 
-              {/* Nuage de points — annotations réelles */}
-              <Scatter
-                data={annotPts}
-                fill="var(--color-accent)"
-                opacity={0.65}
-                name="Annotations"
-              />
+              {/* Nuage — annotations */}
+              <Scatter data={annotPts} fill="var(--color-accent)" opacity={0.65} name="Annotations" />
 
-              {/* Droite de régression — annotations */}
-              <Scatter
+              {/* Droite régression — annotations */}
+              <Line
                 data={regAnnotLine}
-                line={{ stroke: "var(--color-accent)", strokeWidth: 2 }}
-                shape={() => null as any}
+                dataKey="yAnnot"
+                dot={false}
+                stroke="var(--color-accent)"
+                strokeWidth={2}
                 legendType="none"
-                name="Régression annotations"
+                name="Régression annot."
+                isAnimationActive={false}
               />
 
-              {/* Points prédits par le modèle NN */}
+              {/* Nuage — prédictions modèle NN */}
               {modelPredPts.length > 0 && (
-                <Scatter
-                  data={modelPredPts}
-                  fill="var(--color-green)"
-                  opacity={0.8}
-                  name="Modèle NN"
-                />
+                <Scatter data={modelPredPts} fill="var(--color-green)" opacity={0.8} name="Modèle NN" />
               )}
 
-              {/* Droite de régression — modèle NN */}
+              {/* Droite régression — modèle NN */}
               {regModelLine.length > 0 && (
-                <Scatter
+                <Line
                   data={regModelLine}
-                  line={{ stroke: "var(--color-green)", strokeWidth: 2, strokeDasharray: "6 3" }}
-                  shape={() => null as any}
+                  dataKey="yModel"
+                  dot={false}
+                  stroke="var(--color-green)"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
                   legendType="none"
-                  name="Régression modèle"
+                  name="Régression NN"
+                  isAnimationActive={false}
                 />
               )}
-            </ScatterChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       )}
