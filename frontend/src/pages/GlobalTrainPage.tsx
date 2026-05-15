@@ -6,7 +6,7 @@ import {
 } from "../lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ScatterChart, Scatter, ResponsiveContainer, ReferenceLine,
+  ScatterChart, Scatter, ResponsiveContainer,
 } from "recharts";
 
 const TS = {
@@ -15,17 +15,21 @@ const TS = {
   borderRadius: 8, fontSize: 12, color: "var(--color-text)",
 };
 
-// Régression linéaire moindres carrés : y = a*x + b
 function linReg(pts: {x: number, y: number}[]) {
   const n = pts.length;
-  if (n < 2) return { a: 0, b: 0 };
+  if (n < 2) return { a: 0, b: 0, r2: 0 };
   const sx = pts.reduce((s, p) => s + p.x, 0);
   const sy = pts.reduce((s, p) => s + p.y, 0);
   const sxx = pts.reduce((s, p) => s + p.x * p.x, 0);
   const sxy = pts.reduce((s, p) => s + p.x * p.y, 0);
+  const syy = pts.reduce((s, p) => s + p.y * p.y, 0);
   const a = (n * sxy - sx * sy) / (n * sxx - sx * sx);
   const b = (sy - a * sx) / n;
-  return { a, b };
+  const yMean = sy / n;
+  const ssTot = pts.reduce((s, p) => s + (p.y - yMean) ** 2, 0);
+  const ssRes = pts.reduce((s, p) => s + (p.y - (a * p.x + b)) ** 2, 0);
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+  return { a, b, r2 };
 }
 
 export default function GlobalTrainPage() {
@@ -46,17 +50,20 @@ export default function GlobalTrainPage() {
   const pollRef = useRef<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const loadAngleVc = () => {
+    fetch("/api/train/global/angle-vc-data")
+      .then(r => r.ok ? r.json() : [])
+      .then(d => setAngleVcData(d))
+      .catch(() => {});
+  };
+
   useEffect(() => {
     listSessions().then(s => setSessions(s)).catch(() => {});
     loadModels();
     getGlobalTrainProgress().then(p => {
       if (p.status === "running" || p.status === "done") setProgress(p);
     }).catch(() => {});
-    // Charger données angle-vc
-    fetch("/api/train/global/angle-vc-data")
-      .then(r => r.ok ? r.json() : [])
-      .then(d => setAngleVcData(d))
-      .catch(() => {});
+    loadAngleVc();
   }, []);
 
   const loadModels = async () => {
@@ -77,11 +84,7 @@ export default function GlobalTrainPage() {
         if (p.status === "done" || p.status === "error") {
           clearInterval(pollRef.current);
           loadModels();
-          // Recharger données angle-vc après entraînement
-          fetch("/api/train/global/angle-vc-data")
-            .then(r => r.ok ? r.json() : [])
-            .then(d => setAngleVcData(d))
-            .catch(() => {});
+          loadAngleVc();
         }
       } catch { clearInterval(pollRef.current); }
     }, 800);
@@ -117,25 +120,31 @@ export default function GlobalTrainPage() {
     epoch: i + 1, train: tl, val: progress.val_losses?.[i] ?? 0,
   })) ?? [];
 
-  // Scatter Prédit vs Réel : axe X = réel, axe Y = prédit
+  // ── Scatter Prédit vs Réel ─────────────────────────────────────────────────
   const scatterData = progress?.preds?.map((p, i) => ({
-    x: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
-    y: parseFloat(p.toFixed(2)),
+    reel: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
+    predit: parseFloat(p.toFixed(2)),
   })) ?? [];
 
-  // Plage commune pour axe orthonormé
-  const allVals = scatterData.flatMap(d => [d.x, d.y]);
-  const axMin = allVals.length > 0 ? Math.floor(Math.min(...allVals)) : 0;
-  const axMax = allVals.length > 0 ? Math.ceil(Math.max(...allVals)) : 40;
-  // Droite diagonale y=x
-  const diagData = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
+  const allVals = scatterData.flatMap(d => [d.reel, d.predit]);
+  const rawMin = allVals.length > 0 ? Math.min(...allVals) : 0;
+  const rawMax = allVals.length > 0 ? Math.max(...allVals) : 40;
+  const margin = (rawMax - rawMin) * 0.1 + 1;
+  const axMin = parseFloat((rawMin - margin).toFixed(1));
+  const axMax = parseFloat((rawMax + margin).toFixed(1));
+  // Droite y=x (prédiction parfaite)
+  const diagPts = [{ reel: axMin, predit: axMin }, { reel: axMax, predit: axMax }];
 
-  // Données Vc = f(θ)
+  // ── Graphique Vc = f(θ) ────────────────────────────────────────────────────
   const thetaPts = angleVcData.map(d => ({ x: d.theta, y: d.vc }));
   const reg = linReg(thetaPts);
-  const thetaMin = thetaPts.length > 0 ? Math.floor(Math.min(...thetaPts.map(p => p.x))) : 0;
-  const thetaMax = thetaPts.length > 0 ? Math.ceil(Math.max(...thetaPts.map(p => p.x))) : 90;
-  const regLineData = [
+  const thetaVals = thetaPts.map(p => p.x);
+  const vcVals = thetaPts.map(p => p.y);
+  const thetaMin = thetaVals.length > 0 ? parseFloat((Math.min(...thetaVals) - 1).toFixed(1)) : 0;
+  const thetaMax = thetaVals.length > 0 ? parseFloat((Math.max(...thetaVals) + 1).toFixed(1)) : 90;
+  const vcMin = vcVals.length > 0 ? parseFloat((Math.min(...vcVals) - 2).toFixed(1)) : 0;
+  const vcMax = vcVals.length > 0 ? parseFloat((Math.max(...vcVals) + 2).toFixed(1)) : 40;
+  const regPts = [
     { x: thetaMin, y: parseFloat((reg.a * thetaMin + reg.b).toFixed(2)) },
     { x: thetaMax, y: parseFloat((reg.a * thetaMax + reg.b).toFixed(2)) },
   ];
@@ -258,17 +267,21 @@ export default function GlobalTrainPage() {
         </div>
       </div>
 
-      {/* Charts */}
+      {/* Charts post-entraînement */}
       {progress?.status === "done" && lossData.length > 0 && (
         <div className="grid grid-cols-2 gap-6 animate-fade-in">
 
           {/* Courbe de loss */}
           <div className="card">
             <h4 className="text-sm font-bold mb-4">📉 Courbe de loss</h4>
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={240}>
               <LineChart data={lossData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-                <XAxis dataKey="epoch" label={{ value: "Époque", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--color-text-dim)" }} tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
+                <XAxis
+                  dataKey="epoch"
+                  label={{ value: "Époque", position: "insideBottomRight", offset: -5, fontSize: 10, fill: "var(--color-text-dim)" }}
+                  tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
+                />
                 <YAxis tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={TS} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -278,31 +291,59 @@ export default function GlobalTrainPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Scatter Prédit vs Réel — orthonormé + diagonale y=x */}
+          {/* Scatter orthonormé Vc prédit vs Réel */}
           {scatterData.length > 0 && (
             <div className="card">
               <h4 className="text-sm font-bold mb-1">🎯 Vc prédit vs réel (cm/s)</h4>
-              <p className="text-[10px] text-dim mb-3">La droite pointillée = prédiction parfaite (y = x)</p>
-              <ResponsiveContainer width="100%" height={220}>
-                <ScatterChart margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+              <p className="text-[10px] text-dim mb-3">
+                Chaque point = une image · la droite pointillée = prédiction parfaite (y = x)
+              </p>
+              <ResponsiveContainer width="100%" height={240}>
+                <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
-                    dataKey="x" type="number" name="Réel"
+                    dataKey="reel"
+                    type="number"
+                    name="Réel"
                     domain={[axMin, axMax]}
-                    label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -10, fontSize: 10, fill: "var(--color-text-dim)" }}
-                    tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
+                    tickCount={6}
+                    label={{ value: "Vc réel (cm/s)", position: "insideBottom", offset: -15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                    tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                    axisLine={{ stroke: "var(--color-border)" }}
+                    tickLine={false}
                   />
                   <YAxis
-                    dataKey="y" type="number" name="Prédit"
+                    dataKey="predit"
+                    type="number"
+                    name="Prédit"
                     domain={[axMin, axMax]}
-                    label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 10, fontSize: 10, fill: "var(--color-text-dim)" }}
-                    tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
+                    tickCount={6}
+                    label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                    tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                    axisLine={{ stroke: "var(--color-border)" }}
+                    tickLine={false}
                   />
-                  <Tooltip contentStyle={TS} formatter={(v: any, n: string) => [`${v} cm/s`, n === "x" ? "Réel" : "Prédit"]} />
+                  <Tooltip
+                    contentStyle={TS}
+                    formatter={(v: any, name: string) => [`${v} cm/s`, name === "reel" ? "Réel" : "Prédit"]}
+                  />
                   {/* Diagonale y=x */}
-                  <Scatter data={diagData} line={{ stroke: "#888", strokeDasharray: "6 3", strokeWidth: 1.5 }} shape={() => null as any} legendType="none" />
-                  {/* Points mesurés */}
-                  <Scatter data={scatterData} fill="var(--color-accent)" opacity={0.8} name="Mesures" />
+                  <Scatter
+                    data={diagPts}
+                    dataKey="predit"
+                    line={{ stroke: "#888", strokeDasharray: "6 3", strokeWidth: 1.5 }}
+                    shape={() => null as any}
+                    legendType="none"
+                    name="y=x"
+                  />
+                  {/* Points mesures */}
+                  <Scatter
+                    data={scatterData}
+                    dataKey="predit"
+                    fill="var(--color-accent)"
+                    opacity={0.85}
+                    name="Mesures"
+                  />
                 </ScatterChart>
               </ResponsiveContainer>
             </div>
@@ -310,35 +351,64 @@ export default function GlobalTrainPage() {
         </div>
       )}
 
-      {/* Graphique Vc = f(θ) */}
+      {/* Graphique Vc = f(θ) — toujours visible dès qu'il y a des données */}
       {thetaPts.length >= 3 && (
         <div className="card animate-fade-in">
-          <h4 className="text-sm font-bold mb-1">📐 Vc en fonction de θ (angle du câble)</h4>
+          <h4 className="text-sm font-bold mb-1">📐 Vc en fonction de θ (angle PCA du câble)</h4>
           <p className="text-[10px] text-dim mb-3">
-            Nuage de points de toutes les annotations · Droite de régression linéaire :
+            Nuage de points de toutes les annotations · Droite de régression linéaire moindres carrés :
             <span className="font-mono text-accent ml-1">
-              Vc = {reg.a >= 0 ? "+" : ""}{reg.a.toFixed(3)}·θ + {reg.b.toFixed(2)} cm/s
+              Vc = {reg.a >= 0 ? "+" : ""}{reg.a.toFixed(3)}·θ {reg.b >= 0 ? "+" : ""} {reg.b.toFixed(2)} cm/s
             </span>
+            <span className="ml-2 text-dim">(R² = {reg.r2.toFixed(3)})</span>
           </p>
-          <ResponsiveContainer width="100%" height={260}>
-            <ScatterChart margin={{ top: 5, right: 20, bottom: 25, left: 10 }}>
+          <ResponsiveContainer width="100%" height={280}>
+            <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
-                dataKey="x" type="number" name="θ"
+                dataKey="x"
+                type="number"
+                name="θ"
                 domain={[thetaMin, thetaMax]}
-                label={{ value: "θ (°)", position: "insideBottom", offset: -10, fontSize: 11, fill: "var(--color-text-dim)" }}
-                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
+                tickCount={8}
+                label={{ value: "θ (°)", position: "insideBottom", offset: -15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                axisLine={{ stroke: "var(--color-border)" }}
+                tickLine={false}
               />
               <YAxis
-                dataKey="y" type="number" name="Vc"
-                label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 10, fontSize: 11, fill: "var(--color-text-dim)" }}
-                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }} axisLine={false} tickLine={false}
+                dataKey="y"
+                type="number"
+                name="Vc"
+                domain={[vcMin, vcMax]}
+                tickCount={7}
+                label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                axisLine={{ stroke: "var(--color-border)" }}
+                tickLine={false}
               />
-              <Tooltip contentStyle={TS} formatter={(v: any, n: string) => [n === "x" ? `${v}°` : `${v} cm/s`, n === "x" ? "θ" : "Vc"]} />
+              <Tooltip
+                contentStyle={TS}
+                formatter={(v: any, name: string) => [name === "x" ? `${v}°` : `${v} cm/s`, name === "x" ? "θ" : "Vc"]}
+              />
               {/* Droite de régression */}
-              <Scatter data={regLineData} line={{ stroke: "var(--color-green)", strokeWidth: 2 }} shape={() => null as any} legendType="none" />
-              {/* Points annotations */}
-              <Scatter data={thetaPts} fill="var(--color-accent)" opacity={0.7} name="Annotations" />
+              <Scatter
+                data={regPts}
+                dataKey="y"
+                line={{ stroke: "var(--color-green)", strokeWidth: 2 }}
+                shape={() => null as any}
+                legendType="none"
+                name="Régression"
+              />
+              {/* Nuage de points */}
+              <Scatter
+                data={thetaPts}
+                dataKey="y"
+                fill="var(--color-accent)"
+                opacity={0.75}
+                name="Annotations"
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
             </ScatterChart>
           </ResponsiveContainer>
         </div>
