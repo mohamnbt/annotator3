@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   trainSessionModel, getTrainProgress, trainGlobalModel, getGlobalTrainProgress,
-  listModels, predictVc, getAngleVcData,
-  type TrainProgress, type ModelMeta,
+  listModels, listSessions, predictVc, getAngleVcData,
+  type TrainProgress, type ModelMeta, type SessionMeta,
 } from "../lib/api";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -50,6 +50,7 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const [progress, setProgress] = useState<TrainProgress | null>(null);
   const [isTraining, setIsTraining] = useState(false);
   const [models, setModels] = useState<ModelMeta[]>([]);
+  const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [predictFile, setPredictFile] = useState<File | null>(null);
   const [predictResult, setPredictResult] = useState<number | null>(null);
@@ -57,7 +58,18 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const [predictError, setPredictError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [globalModelName, setGlobalModelName] = useState("global_vc_model");
+
+  // Vc = f(θ) — sélecteur de source
+  // "" = global (toutes sessions), ou le nom d'une session spécifique
+  const [vcSource, setVcSource] = useState<string>(isGlobal ? "" : sessionName);
   const [angleVcData, setAngleVcData] = useState<{ theta: number; vc: number }[]>([]);
+  const [vcLoading, setVcLoading] = useState(false);
+
+  // Visualisation d'un modèle existant (courbe Vc_NN = f(θ))
+  const [vizModel, setVizModel] = useState<string | null>(null);
+  const [vizData, setVizData] = useState<{ theta: number; vc: number }[]>([]);
+  const [vizLoading, setVizLoading] = useState(false);
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [predictImageUrl, setPredictImageUrl] = useState<string | null>(null);
@@ -66,13 +78,24 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
     listModels().then(setModels).catch(() => {});
   }, []);
 
-  const loadAngleVc = useCallback(() => {
-    getAngleVcData(isGlobal ? undefined : sessionName)
-      .then(d => { if (Array.isArray(d) && d.length > 0) setAngleVcData(d); })
-      .catch(() => {});
-  }, [sessionName, isGlobal]);
+  const loadSessions = useCallback(() => {
+    listSessions().then(setSessions).catch(() => {});
+  }, []);
 
-  useEffect(() => { loadModels(); loadAngleVc(); }, [loadModels, loadAngleVc]);
+  // Charge les données Vc=f(θ) selon la source choisie
+  const loadAngleVc = useCallback((source: string) => {
+    setVcLoading(true);
+    const p = source === "" ? getAngleVcData() : getAngleVcData(source);
+    p.then(d => { if (Array.isArray(d)) setAngleVcData(d); })
+     .catch(() => {})
+     .finally(() => setVcLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadModels();
+    loadSessions();
+    loadAngleVc(vcSource);
+  }, [loadModels, loadSessions, loadAngleVc, vcSource]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModel) setSelectedModel(models[0].name);
@@ -93,14 +116,14 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
           clearInterval(pollRef.current!);
           setIsTraining(false);
           loadModels();
-          loadAngleVc();
+          loadAngleVc(vcSource);
         }
       } catch {
         clearInterval(pollRef.current!);
         setIsTraining(false);
       }
     }, 500);
-  }, [sessionName, isGlobal, loadModels, loadAngleVc]);
+  }, [sessionName, isGlobal, loadModels, loadAngleVc, vcSource]);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
@@ -121,6 +144,29 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
     } catch (e: any) {
       setProgress({ epoch: 0, total_epochs: epochs, status: "error", error: e.message });
       setIsTraining(false);
+    }
+  };
+
+  // Visualise la courbe Vc_NN d'un modèle existant en faisant passer toutes les images annotées
+  // On utilise ici les données réelles de la source sélectionnée + on ne peut pas avoir les
+  // prédictions NN sans réentraîner (le backend ne stocke pas les preds après redémarrage).
+  // On affiche donc : courbe réelle de la source + info du modèle.
+  // Pour afficher les preds NN d'un modèle sauvegardé, il faudrait une route /api/models/{name}/predict-all.
+  // Pour l'instant on montre : données réelles de la source choisie.
+  const handleVisualize = async (modelName: string) => {
+    if (vizModel === modelName) { setVizModel(null); setVizData([]); return; }
+    setVizModel(modelName);
+    setVizLoading(true);
+    try {
+      // Source = session du modèle si c'est un modèle par session, sinon global
+      const isGlobalModel = modelName.startsWith("global") || !modelName.endsWith("_vc_model");
+      const src = isGlobalModel ? undefined : modelName.replace(/_vc_model$/, "");
+      const d = await getAngleVcData(src);
+      if (Array.isArray(d)) setVizData(d);
+    } catch {
+      setVizData([]);
+    } finally {
+      setVizLoading(false);
     }
   };
 
@@ -157,7 +203,6 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
     "Val Loss": progress.val_losses?.[i] !== undefined ? +(progress.val_losses[i]).toFixed(4) : undefined,
   })) ?? [];
 
-  // ── Scatter Vc prédit vs réel — axes numériques, même domaine ─────────────
   const scatterData = progress?.preds?.map((p, i) => ({
     x: parseFloat((progress.true?.[i] ?? 0).toFixed(2)),
     y: parseFloat(p.toFixed(2)),
@@ -171,9 +216,8 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const axMax = parseFloat((rawMax + mg).toFixed(1));
   const diagPts = [{ x: axMin, y: axMin }, { x: axMax, y: axMax }];
 
-  // ── Vc = f(θ) ────────────────────────────────────────────────────────────
-  // Priorité : angle_vc_pts injecté dans la progression par le backend
-  // Fallback  : angleVcData chargé via /api/sessions/{name}/angle-vc-data
+  // ── Vc = f(θ) — source sélectionnée ───────────────────────────────────────
+  // Pendant l'entraînement : on garde les angle_vc_pts injectés par le backend
   const rawAngleVc: { theta: number; vc: number }[] =
     (progress?.angle_vc_pts && progress.angle_vc_pts.length > 0)
       ? progress.angle_vc_pts
@@ -182,27 +226,35 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
   const annotPts = rawAngleVc.map(d => ({ x: d.theta, y: d.vc }));
   const regAnnot = linReg(annotPts);
 
-  const modelPredPts: { x: number; y: number }[] = [];
-  if (progress?.preds && progress.preds.length > 0 && rawAngleVc.length > 0) {
-    const nPreds = progress.preds.length;
-    rawAngleVc.slice(-nPreds).forEach((d, i) => {
-      modelPredPts.push({ x: d.theta, y: parseFloat((progress.preds![i]).toFixed(2)) });
-    });
-  }
-  const regModel = linReg(modelPredPts);
+  // Courbe NN (après entraînement, depuis nn_angle_vc_pts)
+  const nnPts = (progress as any)?.nn_angle_vc_pts
+    ? (progress as any).nn_angle_vc_pts.map((d: any) => ({ x: d.theta, y: d.vc }))
+    : [];
+  const regNN = linReg(nnPts);
 
-  const allTh = [...annotPts, ...modelPredPts].map(p => p.x);
-  const allVc = [...annotPts, ...modelPredPts].map(p => p.y);
+  const allTh = [...annotPts, ...nnPts].map(p => p.x);
+  const allVcY = [...annotPts, ...nnPts].map(p => p.y);
   const thMin = allTh.length > 0 ? parseFloat((Math.min(...allTh) - 1).toFixed(1)) : 0;
   const thMax = allTh.length > 0 ? parseFloat((Math.max(...allTh) + 1).toFixed(1)) : 90;
-  const vcMin = allVc.length > 0 ? parseFloat((Math.min(...allVc) - 2).toFixed(1)) : 0;
-  const vcMax = allVc.length > 0 ? parseFloat((Math.max(...allVc) + 2).toFixed(1)) : 40;
+  const vcMin = allVcY.length > 0 ? parseFloat((Math.min(...allVcY) - 2).toFixed(1)) : 0;
+  const vcMax = allVcY.length > 0 ? parseFloat((Math.max(...allVcY) + 2).toFixed(1)) : 40;
 
   const regAnnotLine = annotPts.length >= 2 ? regressionLine(regAnnot.a, regAnnot.b, thMin, thMax) : [];
-  const regModelLine = modelPredPts.length >= 2 ? regressionLine(regModel.a, regModel.b, thMin, thMax) : [];
+  const regNNLine = nnPts.length >= 2 ? regressionLine(regNN.a, regNN.b, thMin, thMax) : [];
 
-  // Afficher Vc=f(θ) dès qu'on a ≥2 points annotés (même avant la fin de l'entraînement)
   const showVcTheta = annotPts.length >= 2;
+
+  // ── Viz modèle existant ────────────────────────────────────────────────────
+  const vizPts = vizData.map(d => ({ x: d.theta, y: d.vc }));
+  const regViz = linReg(vizPts);
+  const vizThMin = vizPts.length > 0 ? parseFloat((Math.min(...vizPts.map(p => p.x)) - 1).toFixed(1)) : 0;
+  const vizThMax = vizPts.length > 0 ? parseFloat((Math.max(...vizPts.map(p => p.x)) + 1).toFixed(1)) : 90;
+  const vizVcMin = vizPts.length > 0 ? parseFloat((Math.min(...vizPts.map(p => p.y)) - 2).toFixed(1)) : 0;
+  const vizVcMax = vizPts.length > 0 ? parseFloat((Math.max(...vizPts.map(p => p.y)) + 2).toFixed(1)) : 40;
+  const regVizLine = vizPts.length >= 2 ? regressionLine(regViz.a, regViz.b, vizThMin, vizThMax) : [];
+
+  // Dossiers uniques pour le sélecteur
+  const folders = Array.from(new Set(sessions.map(s => s.folder).filter(Boolean)));
 
   const TS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 11 };
 
@@ -228,73 +280,100 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
         </div>
       )}
 
-      {/* Vc = f(θ) — affiché TOUJOURS dès qu'on a des données, pas besoin d'entraîner */}
-      {showVcTheta && (
-        <Section icon="📐" title="Vc = f(θ) — angle PCA du câble">
-          <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>
-            <span style={{ color: C.accent }}>● Annotations</span>
-            {" : Vc = "}{regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s
-            <span style={{ color: C.muted, marginLeft: 8 }}>R² = {regAnnot.r2.toFixed(3)}</span>
-            <span style={{ color: C.muted, marginLeft: 8 }}>({annotPts.length} points)</span>
+      {/* Vc = f(θ) — avec sélecteur de source */}
+      <Section icon="📐" title="Vc = f(θ) — angle PCA du câble">
+        {/* Sélecteur de source */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+          <label style={{ ...labelStyle, marginBottom: 0, whiteSpace: "nowrap" }}>Source :</label>
+          <select
+            value={vcSource}
+            onChange={e => { setVcSource(e.target.value); setProgress(null); }}
+            style={{ flex: "0 0 auto", minWidth: 220, fontSize: 12 }}
+          >
+            <option value="">🌍 Toutes les sessions</option>
+            {folders.length > 0 && (
+              <optgroup label="── Par dossier ──" />
+            )}
+            {folders.map(f => (
+              <optgroup key={f} label={`📁 ${f}`}>
+                {sessions.filter(s => s.folder === f).map(s => (
+                  <option key={s.name} value={s.name}>
+                    📂 {s.name} ({s.images.filter(i => i.status === "annotated").length} ann.)
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+            {sessions.filter(s => !s.folder).map(s => (
+              <option key={s.name} value={s.name}>
+                📂 {s.name} ({s.images.filter(i => i.status === "annotated").length} ann.)
+              </option>
+            ))}
+          </select>
+          {vcLoading && <span style={{ fontSize: 11, color: C.muted }}>⏳ chargement…</span>}
+        </div>
+
+        {!showVcTheta ? (
+          <div style={{
+            padding: 24, textAlign: "center", color: C.muted, fontSize: 13,
+            background: C.surface2, borderRadius: 12, border: `1px dashed ${C.border}`,
+          }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>📐</div>
+            Pas encore assez d'annotations avec θ et Vc pour cette source.
           </div>
-          {regModelLine.length > 0 && (
-            <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
-              <span style={{ color: C.green }}>● Modèle NN</span>
-              {" : Vc = "}{regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s
-              <span style={{ color: C.muted, marginLeft: 8 }}>R² = {regModel.r2.toFixed(3)}</span>
+        ) : (
+          <>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>
+              <span style={{ color: C.accent }}>● Annotations</span>
+              {" : Vc = "}{regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s
+              <span style={{ color: C.muted, marginLeft: 8 }}>R² = {regAnnot.r2.toFixed(3)}</span>
+              <span style={{ color: C.muted, marginLeft: 8 }}>({annotPts.length} pts)</span>
             </div>
-          )}
-          <ResponsiveContainer width="100%" height={260}>
-            <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-              <XAxis
-                dataKey="x" type="number" name="θ"
-                domain={[thMin, thMax]} tickCount={7}
-                label={{ value: "θ (°)", position: "insideBottom", offset: -14, fontSize: 10, fill: C.muted }}
-                tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
-              />
-              <YAxis
-                dataKey="y" type="number" name="Vc"
-                domain={[vcMin, vcMax]} tickCount={6}
-                label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
-                tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
-              />
-              <Tooltip contentStyle={TS}
-                formatter={(v: any, name: string) =>
-                  name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
-                }
-              />
-              <Legend wrapperStyle={{ fontSize: 10 }} />
-              {/* Nuage annotations */}
-              <Scatter data={annotPts} fill={C.accent} opacity={0.65} name="Annotations" />
-              {/* Droite régression annotations */}
-              {regAnnotLine.length > 0 && (
-                <Scatter
-                  data={regAnnotLine}
-                  line={{ stroke: C.accent, strokeWidth: 1.5 }}
-                  shape={() => null as any}
-                  legendType="none"
-                  name="rég. annot."
+            {regNNLine.length > 0 && (
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+                <span style={{ color: C.green }}>● Modèle NN</span>
+                {" : Vc = "}{regNN.a.toFixed(3)}·θ {regNN.b >= 0 ? "+" : ""}{regNN.b.toFixed(2)} cm/s
+                <span style={{ color: C.muted, marginLeft: 8 }}>R² = {regNN.r2.toFixed(3)}</span>
+              </div>
+            )}
+            <ResponsiveContainer width="100%" height={260}>
+              <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                <XAxis
+                  dataKey="x" type="number" name="θ"
+                  domain={[thMin, thMax]} tickCount={7}
+                  label={{ value: "θ (°)", position: "insideBottom", offset: -14, fontSize: 10, fill: C.muted }}
+                  tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
                 />
-              )}
-              {/* Points prédits NN */}
-              {modelPredPts.length > 0 && (
-                <Scatter data={modelPredPts} fill={C.green} opacity={0.85} name="Modèle NN" />
-              )}
-              {/* Droite régression modèle NN */}
-              {regModelLine.length > 0 && (
-                <Scatter
-                  data={regModelLine}
-                  line={{ stroke: C.green, strokeWidth: 2, strokeDasharray: "6 3" }}
-                  shape={() => null as any}
-                  legendType="none"
-                  name="rég. modèle"
+                <YAxis
+                  dataKey="y" type="number" name="Vc"
+                  domain={[vcMin, vcMax]} tickCount={6}
+                  label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
+                  tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
                 />
-              )}
-            </ScatterChart>
-          </ResponsiveContainer>
-        </Section>
-      )}
+                <Tooltip contentStyle={TS}
+                  formatter={(v: any, name: string) =>
+                    name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
+                  }
+                />
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+                <Scatter data={annotPts} fill={C.accent} opacity={0.65} name="Annotations" />
+                {regAnnotLine.length > 0 && (
+                  <Scatter data={regAnnotLine} line={{ stroke: C.accent, strokeWidth: 1.5 }}
+                    shape={() => null as any} legendType="none" name="rég. annot." />
+                )}
+                {nnPts.length > 0 && (
+                  <Scatter data={nnPts} fill={C.green} opacity={0.85} name="Modèle NN" />
+                )}
+                {regNNLine.length > 0 && (
+                  <Scatter data={regNNLine}
+                    line={{ stroke: C.green, strokeWidth: 2, strokeDasharray: "6 3" }}
+                    shape={() => null as any} legendType="none" name="rég. modèle" />
+                )}
+              </ScatterChart>
+            </ResponsiveContainer>
+          </>
+        )}
+      </Section>
 
       {/* SECTION ENTRAÎNEMENT */}
       <Section icon="🧠" title="Entraîner un modèle Vc">
@@ -327,7 +406,6 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
           </div>
         )}
 
-        {/* Progression */}
         {progress && progress.status !== "idle" && (
           <div style={{
             background: C.surface2, borderRadius: 12, padding: 18,
@@ -405,17 +483,12 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
                         <YAxis
                           dataKey="y" type="number" name="Vc prédit"
                           domain={[axMin, axMax]} tickCount={6}
-                          label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
+                          label={{ value: "Vc prédit (cm/s)", angle: -90, position: "insideLeft", offset: 14, fill: C.muted, fontSize: 10 }}
                           tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
                         />
                         <Tooltip contentStyle={TS} formatter={(v: any) => [`${v} cm/s`]} />
-                        <Scatter
-                          data={diagPts}
-                          line={{ stroke: "#888", strokeDasharray: "5 3", strokeWidth: 1.5 }}
-                          shape={() => null as any}
-                          legendType="none"
-                          name="y=x"
-                        />
+                        <Scatter data={diagPts} line={{ stroke: "#888", strokeDasharray: "5 3", strokeWidth: 1.5 }}
+                          shape={() => null as any} legendType="none" name="y=x" />
                         <Scatter data={scatterData} fill={C.green} opacity={0.85} name="Mesures" />
                       </ScatterChart>
                     </ResponsiveContainer>
@@ -502,29 +575,102 @@ export default function AIPanel({ sessionName, isGlobal = false, preselectedSess
         )}
       </Section>
 
-      {!isGlobal && models.length > 0 && (
+      {/* MODÈLES DISPONIBLES — avec bouton Visualiser */}
+      {models.length > 0 && (
         <Section icon="📦" title="Modèles entraînés">
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {models.map(m => (
-              <div key={m.name} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "10px 14px", background: C.bg, borderRadius: 10, border: `1px solid ${C.border}`,
-              }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 16 }}>{m.is_global ? "🌍" : "📂"}</span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
-                    <div style={{ fontSize: 10, color: C.muted }}>{m.size_mb} MB — {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+              <div key={m.name}>
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 14px", background: C.bg, borderRadius: vizModel === m.name ? "10px 10px 0 0" : 10,
+                  border: `1px solid ${vizModel === m.name ? C.accent : C.border}`,
+                  transition: "border-color 0.2s",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 16 }}>{m.is_global ? "🌍" : "📂"}</span>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{m.name}</div>
+                      <div style={{ fontSize: 10, color: C.muted }}>{m.size_mb} MB — {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      onClick={() => handleVisualize(m.name)}
+                      style={{
+                        fontSize: 11, padding: "4px 12px", borderRadius: 6, cursor: "pointer",
+                        border: `1px solid ${vizModel === m.name ? C.accent : C.border}`,
+                        background: vizModel === m.name ? "rgba(0,255,255,0.12)" : C.surface2,
+                        color: vizModel === m.name ? C.accent : C.text,
+                        fontWeight: 600, transition: "all 0.2s",
+                      }}
+                    >
+                      {vizLoading && vizModel === m.name ? "⏳" : vizModel === m.name ? "✕ Fermer" : "📈 Visualiser"}
+                    </button>
+                    <a
+                      href={`http://localhost:8000/api/models/${encodeURIComponent(m.filename)}/download`}
+                      className="btn btn-secondary"
+                      style={{ fontSize: 11, textDecoration: "none", padding: "4px 12px" }}
+                      download={m.filename}
+                    >
+                      ⬇ Télécharger
+                    </a>
                   </div>
                 </div>
-                <a
-                  href={`http://localhost:8000/api/models/${encodeURIComponent(m.filename)}/download`}
-                  className="btn btn-secondary"
-                  style={{ fontSize: 11, textDecoration: "none", padding: "4px 12px" }}
-                  download={m.filename}
-                >
-                  ⬇ Télécharger
-                </a>
+
+                {/* Panneau de visualisation dépliable */}
+                {vizModel === m.name && (
+                  <div style={{
+                    padding: 16, background: "rgba(0,255,255,0.03)",
+                    border: `1px solid ${C.accent}`, borderTop: "none",
+                    borderRadius: "0 0 10px 10px",
+                  }}>
+                    {vizLoading ? (
+                      <div style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 24 }}>⏳ Chargement des données…</div>
+                    ) : vizPts.length < 2 ? (
+                      <div style={{ textAlign: "center", color: C.muted, fontSize: 13, padding: 16 }}>
+                        Pas assez de données Vc/θ pour ce modèle.
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+                          <span style={{ color: C.accent }}>● Données réelles</span>
+                          {" : Vc = "}{regViz.a.toFixed(3)}·θ {regViz.b >= 0 ? "+" : ""}{regViz.b.toFixed(2)} cm/s
+                          <span style={{ marginLeft: 8 }}>R² = {regViz.r2.toFixed(3)}</span>
+                          <span style={{ marginLeft: 8, color: C.muted }}>({vizPts.length} points)</span>
+                        </div>
+                        <ResponsiveContainer width="100%" height={220}>
+                          <ScatterChart margin={{ top: 8, right: 16, bottom: 28, left: 8 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                            <XAxis
+                              dataKey="x" type="number" name="θ"
+                              domain={[vizThMin, vizThMax]} tickCount={7}
+                              label={{ value: "θ (°)", position: "insideBottom", offset: -14, fontSize: 10, fill: C.muted }}
+                              tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
+                            />
+                            <YAxis
+                              dataKey="y" type="number" name="Vc"
+                              domain={[vizVcMin, vizVcMax]} tickCount={6}
+                              label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 14, fontSize: 10, fill: C.muted }}
+                              tick={{ fontSize: 9, fill: C.muted }} axisLine={{ stroke: C.border }} tickLine={false}
+                            />
+                            <Tooltip contentStyle={TS}
+                              formatter={(v: any, name: string) =>
+                                name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, "Vc"]
+                              }
+                            />
+                            <Legend wrapperStyle={{ fontSize: 10 }} />
+                            <Scatter data={vizPts} fill={C.accent} opacity={0.65} name="Annotations" />
+                            {regVizLine.length > 0 && (
+                              <Scatter data={regVizLine} line={{ stroke: C.accent, strokeWidth: 1.5 }}
+                                shape={() => null as any} legendType="none" name="régression" />
+                            )}
+                          </ScatterChart>
+                        </ResponsiveContainer>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
