@@ -28,12 +28,12 @@ import numpy as np
 
 app = FastAPI(title="COSMER Annotator API v2", version="2.0.0")
 
-# ─── Progression globals ───────────────────────────────────────────────
+# ─── Progression globals ────────────────────────────────────────────────────────
 EXTRACTION_PROGRESS = {}  # {session_name: {current, total, status}}
 TRAIN_PROGRESS = {}        # {session_name: {epoch, total_epochs, status, ...}}
 GLOBAL_TRAIN_PROGRESS = {}  # {"global": {...}}
 
-# ─── CORS ─────────────────────────────────────────────────────────────────────
+# ─── CORS ───────────────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
@@ -42,13 +42,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Paths ────────────────────────────────────────────────────────────────────────
+# ─── Paths ──────────────────────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent.parent / "data" / "sessions"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR = Path(__file__).parent.parent / "data" / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ─── YOLO model (optional) ───────────────────────────────────────────────────
+# ─── YOLO model (optional) ───────────────────────────────────────────────────────────────────────
 YOLO_MODEL = None
 YOLO_MODEL_PATH = Path(__file__).parent / "best.pt"
 
@@ -73,7 +73,7 @@ async def global_exception_handler(request, exc):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────────────────────────
 
 def ann_get(ann: dict, field: str, default=None):
     """
@@ -205,7 +205,7 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
     return points
 
 
-# ─── Uniformisation des points (équidistance + nombre fixe) ──────────────────────────
+# ─── Uniformisation des points (équidistance + nombre fixe) ──────────────────────────────────────
 
 def _resample_equidistant(points: list, n: int) -> list:
     if len(points) < 2 or n < 2:
@@ -269,7 +269,7 @@ def _retroactively_resample_session(session_name: str, target_n: int):
             print(f"[RESAMPLE] Erreur sur {ann_file.name}: {e}")
 
 
-# ─── PyTorch helper ───────────────────────────────────────────────────────────────────
+# ─── PyTorch helper ──────────────────────────────────────────────────────────────────────────────────────
 def get_torch_modules():
     try:
         import torch
@@ -282,7 +282,34 @@ def get_torch_modules():
         return None, None, None, None, None, None, None
 
 
-# ─── Session Routes ────────────────────────────────────────────────────────────────────
+# ─── Helper : extraire les paires (theta, vc) d'une liste de samples ──────────────────────────
+def _build_angle_vc_pts(samples: list) -> list:
+    """
+    samples = [(img_path, vc), ...]
+    Lit l'annotation associée pour récupérer cable_angle_deg.
+    Retourne [{theta, vc}, ...] trié par theta.
+    """
+    pts = []
+    for img_path, vc in samples:
+        p = Path(img_path)
+        # remonte à la racine de la session (images/../annotations/stem.json)
+        ann_path = p.parent.parent / "annotations" / (p.stem + ".json")
+        if not ann_path.exists():
+            continue
+        try:
+            with open(ann_path) as f:
+                ann = json.load(f)
+            theta_raw = ann.get("cable_angle_deg")
+            if theta_raw in ("", None):
+                continue
+            pts.append({"theta": round(float(theta_raw), 3), "vc": round(float(vc), 3)})
+        except Exception:
+            continue
+    pts.sort(key=lambda d: d["theta"])
+    return pts
+
+
+# ─── Session Routes ─────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sanitize")
 async def sanitize_name_endpoint(name: str = Query(...)):
@@ -356,7 +383,7 @@ async def batch_move_sessions(names: List[str] = Body(...), folder: str = Body(.
     return {"updated": updated}
 
 
-# ─── Image Routes ─────────────────────────────────────────────────────────────────────
+# ─── Image Routes ──────────────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/sessions/{name}/images")
 async def upload_images(name: str, files: List[UploadFile] = File(...)):
@@ -410,7 +437,7 @@ async def delete_image(name: str, filename: str):
     return {"message": f"Image '{filename}' deleted"}
 
 
-# ─── YOLO Auto-annotation ────────────────────────────────────────────────────────
+# ─── YOLO Auto-annotation ─────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/yolo/status")
 async def yolo_status():
@@ -445,7 +472,7 @@ async def predict_annotation(name: str, filename: str, conf: float = Query(0.5))
         raise HTTPException(status_code=500, detail=f"Erreur YOLO: {str(e)}")
 
 
-# ─── Video Extraction (FFmpeg) ─────────────────────────────────────────────────────────
+# ─── Video Extraction (FFmpeg) ────────────────────────────────────────────────────────────────────────────────────
 
 def extract_frames_ffmpeg_bg(video_path: str, output_dir: str, video_stem: str,
                               frame_interval: int, session_name: str):
@@ -517,7 +544,7 @@ async def extract_video_frames(
     return {"status": "started", "message": "Extraction lancée via FFmpeg en arrière-plan"}
 
 
-# ─── Annotation Routes ──────────────────────────────────────────────────────────────────
+# ─── Annotation Routes ────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/annotations/{stem}")
 async def get_annotation(name: str, stem: str):
@@ -539,7 +566,7 @@ async def save_annotation(name: str, stem: str, data: dict):
     img_width = data.get("image_width", 1)
     img_height = data.get("image_height", 1)
 
-    # ── Uniformisation : rééchantillonnage équidistant ──────────────────────────
+    # ── Uniformisation : rééchantillonnage équidistant ──────────────────────────────────
     if points and len(points) >= 2:
         target_n = _get_session_target_n(name, len(points))
         points = _resample_equidistant(points, target_n)
@@ -547,7 +574,7 @@ async def save_annotation(name: str, stem: str, data: dict):
         data["n_points_normalized"] = target_n
         _retroactively_resample_session(name, target_n)
 
-    # ── Calcul des angles ────────────────────────────────────────────────────────
+    # ── Calcul des angles ──────────────────────────────────────────────────────────────
     if points and len(points) >= 2:
         angle_data = calc_cable_angle(points)
         data["cable_angle_deg"] = angle_data["cable_angle_deg"]
@@ -559,7 +586,7 @@ async def save_annotation(name: str, stem: str, data: dict):
     with open(ann_path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    # ── Label YOLO ───────────────────────────────────────────────────────────────
+    # ── Label YOLO ─────────────────────────────────────────────────────────────────────────────
     mode = data.get("annotation_mode", "centerline")
     if mode == "contour" and "left_points" in data and "right_points" in data:
         left = data["left_points"]
@@ -568,7 +595,7 @@ async def save_annotation(name: str, stem: str, data: dict):
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
 
-    # ── Mise à jour du statut image ─────────────────────────────────────────────
+    # ── Mise à jour du statut image ─────────────────────────────────────────────────────────
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
@@ -607,7 +634,7 @@ async def get_last_conditions(name: str):
     return last
 
 
-# ─── Export Routes ───────────────────────────────────────────────────────────────────────
+# ─── Export Routes ──────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/export/stats")
 async def export_stats(name: str):
@@ -733,7 +760,7 @@ async def global_export_download():
     )
 
 
-# ─── Statistics ────────────────────────────────────────────────────────────────────────────
+# ─── Statistics ────────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/statistics")
 async def get_statistics(name: str):
@@ -805,7 +832,7 @@ async def get_statistics(name: str):
     }
 
 
-# ─── Train Vc (ResNet18 per session) ──────────────────────────────────────────────────────────
+# ─── Train Vc (ResNet18 per session) ─────────────────────────────────────────────────────────────────────────────────────
 
 def run_train_session(session_name: str, epochs: int):
     torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
@@ -842,6 +869,10 @@ def run_train_session(session_name: str, epochs: int):
         split = max(1, int(len(samples) * 0.8))
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
+
+        # Précalcul des paires (theta, vc) pour TOUS les samples (train + val)
+        all_angle_vc_pts = _build_angle_vc_pts(samples)
+
         tf_train = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
@@ -874,9 +905,12 @@ def run_train_session(session_name: str, epochs: int):
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
         criterion = nn.MSELoss()
         train_losses, val_losses = [], []
-        TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "running",
-                                         "n_train": len(train_samples), "n_val": len(val_samples),
-                                         "device": str(device)}
+        TRAIN_PROGRESS[session_name] = {
+            "epoch": 0, "total_epochs": epochs, "status": "running",
+            "n_train": len(train_samples), "n_val": len(val_samples),
+            "device": str(device),
+            "angle_vc_pts": all_angle_vc_pts,  # injecté dès le début
+        }
         for ep in range(epochs):
             model.train()
             tl = 0.0
@@ -906,11 +940,40 @@ def run_train_session(session_name: str, epochs: int):
         rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
         model_filename = f"{session_name}_vc_model.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
+
+        # Prédictions NN sur TOUS les samples pour la courbe Vc_NN = f(theta)
+        all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
+        model.eval()
+        all_preds = []
+        with torch.no_grad():
+            for xb, _ in all_loader:
+                out = model(xb.to(device))
+                all_preds += out.squeeze().cpu().tolist() if out.squeeze().dim() > 0 else [out.squeeze().item()]
+        # Associe theta_i → pred_i pour le graphe Vc_NN = f(theta)
+        nn_angle_vc_pts = []
+        for i, (img_path, _) in enumerate(samples):
+            p = Path(img_path)
+            ann_path = p.parent.parent / "annotations" / (p.stem + ".json")
+            if not ann_path.exists():
+                continue
+            try:
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                theta_raw = ann.get("cable_angle_deg")
+                if theta_raw in ("", None):
+                    continue
+                nn_angle_vc_pts.append({"theta": round(float(theta_raw), 3), "vc": round(float(all_preds[i]), 3)})
+            except Exception:
+                continue
+        nn_angle_vc_pts.sort(key=lambda d: d["theta"])
+
         TRAIN_PROGRESS[session_name].update({
             "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
             "preds": [round(float(p), 2) for p in preds_list],
             "true": [round(float(t), 2) for t in true_list],
             "model_name": session_name,
+            "angle_vc_pts": all_angle_vc_pts,        # courbe réelle (annotations)
+            "nn_angle_vc_pts": nn_angle_vc_pts,       # courbe modèle NN
         })
     except Exception as e:
         TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": str(e)}
@@ -927,7 +990,40 @@ async def get_train_progress(name: str):
     return TRAIN_PROGRESS.get(name, {"epoch": 0, "total_epochs": 0, "status": "idle"})
 
 
-# ─── Train Global Vc ─────────────────────────────────────────────────────────────────────────
+# ─── Angle-Vc data (par session) ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/sessions/{name}/angle-vc-data")
+async def get_session_angle_vc_data(name: str):
+    """
+    Retourne [{theta, vc}] pour une session spécifique.
+    Utilisé pour le graphique Vc = f(θ) de l'onglet session.
+    """
+    meta = load_session_meta(name)
+    session_dir = get_session_dir(name)
+    ann_dir = session_dir / "annotations"
+    result = []
+    for img in meta["images"]:
+        if img["status"] != "annotated":
+            continue
+        stem = Path(img["filename"]).stem
+        ann_path = ann_dir / f"{stem}.json"
+        if not ann_path.exists():
+            continue
+        try:
+            with open(ann_path) as f:
+                ann = json.load(f)
+            theta_raw = ann.get("cable_angle_deg")
+            vc_raw = ann_get(ann, "current_speed_cm_s")
+            if theta_raw in ("", None) or vc_raw in ("", None):
+                continue
+            result.append({"theta": round(float(theta_raw), 3), "vc": round(float(vc_raw), 3)})
+        except (ValueError, TypeError, KeyError):
+            continue
+    result.sort(key=lambda d: d["theta"])
+    return result
+
+
+# ─── Train Global Vc ───────────────────────────────────────────────────────────────────────────────────────
 
 def run_train_global(session_names: Optional[List[str]], epochs: int, model_name: str):
     torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
@@ -973,6 +1069,10 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         split = max(1, int(len(samples) * 0.8))
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
+
+        # Précalcul des paires (theta, vc) réelles
+        all_angle_vc_pts = _build_angle_vc_pts(samples)
+
         tf_train = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
@@ -1005,9 +1105,12 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
         criterion = nn.MSELoss()
         train_losses, val_losses = [], []
-        GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "running",
-                                       "n_train": len(train_samples), "n_val": len(val_samples),
-                                       "device": str(device)}
+        GLOBAL_TRAIN_PROGRESS[key] = {
+            "epoch": 0, "total_epochs": epochs, "status": "running",
+            "n_train": len(train_samples), "n_val": len(val_samples),
+            "device": str(device),
+            "angle_vc_pts": all_angle_vc_pts,
+        }
         for ep in range(epochs):
             model.train()
             tl = 0.0
@@ -1037,11 +1140,39 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
         model_filename = f"{model_name}.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
+
+        # Prédictions NN sur TOUS les samples
+        all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
+        model.eval()
+        all_preds = []
+        with torch.no_grad():
+            for xb, _ in all_loader:
+                out = model(xb.to(device))
+                all_preds += out.squeeze().cpu().tolist() if out.squeeze().dim() > 0 else [out.squeeze().item()]
+        nn_angle_vc_pts = []
+        for i, (img_path, _) in enumerate(samples):
+            p = Path(img_path)
+            ann_path = p.parent.parent / "annotations" / (p.stem + ".json")
+            if not ann_path.exists():
+                continue
+            try:
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                theta_raw = ann.get("cable_angle_deg")
+                if theta_raw in ("", None):
+                    continue
+                nn_angle_vc_pts.append({"theta": round(float(theta_raw), 3), "vc": round(float(all_preds[i]), 3)})
+            except Exception:
+                continue
+        nn_angle_vc_pts.sort(key=lambda d: d["theta"])
+
         GLOBAL_TRAIN_PROGRESS[key].update({
             "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
             "preds": [round(float(p), 2) for p in preds_list],
             "true": [round(float(t), 2) for t in true_list],
             "model_name": model_name,
+            "angle_vc_pts": all_angle_vc_pts,
+            "nn_angle_vc_pts": nn_angle_vc_pts,
         })
     except Exception as e:
         GLOBAL_TRAIN_PROGRESS[key] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": str(e)}
@@ -1067,7 +1198,6 @@ async def get_global_train_progress():
 async def get_angle_vc_data():
     """
     Retourne [{theta, vc}] pour toutes les annotations de toutes les sessions.
-    Utilisé pour le graphique Vc = f(θ) avec droite de régression PCA.
     """
     result = []
     if not DATA_DIR.exists():
@@ -1099,10 +1229,11 @@ async def get_angle_vc_data():
                 result.append({"theta": round(theta, 3), "vc": round(vc, 3)})
             except (ValueError, TypeError, KeyError):
                 continue
+    result.sort(key=lambda d: d["theta"])
     return result
 
 
-# ─── Models ────────────────────────────────────────────────────────────────────────────────
+# ─── Models ──────────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/models")
 async def list_models():
@@ -1131,7 +1262,7 @@ async def download_model(filename: str):
     )
 
 
-# ─── Predict Vc ───────────────────────────────────────────────────────────────────────────
+# ─── Predict Vc ───────────────────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/predict")
 async def predict_vc(model_name: str = Form(...), file: UploadFile = File(...)):
