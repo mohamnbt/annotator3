@@ -648,5 +648,5 @@ model.fc = nn.Sequential(nn.Linear(2048, 128), nn.ReLU(), nn.Dropout(0.3), nn.Li
 
 ## Licence
 
-Développé au **Laboratoire COSMER — Université de Toulon**.  
-Usage interne recherche. Contacter le laboratoire pour toute question.
+Développé avec assistance IA par **Mohamed-Amine Boutahri** (étudiant L3 Physique) pour le laboratoire COSMER.  
+Usage interne recherche. Contact à l'adresse mohamed-amine-bouthari@etud.univ-tln.fr pour toute question.
