@@ -76,11 +76,6 @@ async def global_exception_handler(request, exc):
 # ─── Helpers ─────────────────────────────────────────────────────────────────────────────────────
 
 def ann_get(ann: dict, field: str, default=None):
-    """
-    Lecture compatible des champs d'annotation :
-    Cherche d'abord dans ann['conditions'] (nouveau format),
-    puis directement à la racine (ancien format).
-    """
     conditions = ann.get("conditions", {})
     if field in conditions:
         return conditions[field]
@@ -205,7 +200,7 @@ def _centerline_slices(mask_img: np.ndarray, img_w: int, img_h: int, n_points: i
     return points
 
 
-# ─── Uniformisation des points (équidistance + nombre fixe) ──────────────────────────────────────
+# ─── Uniformisation des points ──────────────────────────────────────────────────────────────────
 
 def _resample_equidistant(points: list, n: int) -> list:
     if len(points) < 2 or n < 2:
@@ -282,17 +277,11 @@ def get_torch_modules():
         return None, None, None, None, None, None, None
 
 
-# ─── Helper : extraire les paires (theta, vc) d'une liste de samples ──────────────────────────
+# ─── Helper : extraire les paires (theta, vc) ──────────────────────────────────────────────────
 def _build_angle_vc_pts(samples: list) -> list:
-    """
-    samples = [(img_path, vc), ...]
-    Lit l'annotation associée pour récupérer cable_angle_deg.
-    Retourne [{theta, vc}, ...] trié par theta.
-    """
     pts = []
     for img_path, vc in samples:
         p = Path(img_path)
-        # remonte à la racine de la session (images/../annotations/stem.json)
         ann_path = p.parent.parent / "annotations" / (p.stem + ".json")
         if not ann_path.exists():
             continue
@@ -309,7 +298,7 @@ def _build_angle_vc_pts(samples: list) -> list:
     return pts
 
 
-# ─── Helper CSV pour export ────────────────────────────────────────────────────────────────────
+# ─── Helper CSV pour export ─────────────────────────────────────────────────────────────────────
 CSV_FIELDNAMES = [
     "filename", "session", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
     "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
@@ -318,10 +307,6 @@ CSV_FIELDNAMES = [
 ]
 
 def _build_csv(items: list) -> str:
-    """
-    items = [(split_name, session_name, fn, ann_path), ...]
-    Retourne le contenu CSV sous forme de string.
-    """
     csv_buf = io.StringIO()
     writer = csv.DictWriter(csv_buf, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
     writer.writeheader()
@@ -340,7 +325,84 @@ def _build_csv(items: list) -> str:
     return csv_buf.getvalue()
 
 
-# ─── Session Routes ─────────────────────────────────────────────────────────────────────────────────────
+# ─── Helper : génère le script train_yolo.py pour le ZIP ────────────────────────────────────────
+def _build_train_script(dataset_name: str) -> str:
+    return f'''#!/usr/bin/env python3
+"""
+train_yolo.py  —  Script d\'entraînement YOLOv8 segmentation
+Dataset : {dataset_name}
+Généré automatiquement par COSMER Annotator
+Laboratoire COSMER, Université de Toulon
+"""
+
+import argparse
+from pathlib import Path
+
+def main():
+    parser = argparse.ArgumentParser(description="Entraîner YOLOv8 seg sur le dataset {dataset_name}")
+    parser.add_argument("--model",   default="yolov8n-seg.pt", help="Modèle de base (yolov8n/s/m/l/x-seg.pt)")
+    parser.add_argument("--epochs",  type=int,   default=100,  help="Nombre d\'epochs")
+    parser.add_argument("--imgsz",   type=int,   default=640,  help="Taille des images")
+    parser.add_argument("--batch",   type=int,   default=16,   help="Taille du batch (-1 = auto)")
+    parser.add_argument("--device",  default="",              help="Device : 0, cpu, mps ...")
+    parser.add_argument("--workers", type=int,   default=4,    help="Nombre de workers DataLoader")
+    parser.add_argument("--project", default="runs/segment",  help="Dossier de sortie")
+    parser.add_argument("--name",    default="{dataset_name}", help="Nom de l\'expérience")
+    parser.add_argument("--resume",  action="store_true",     help="Reprendre l\'entraînement")
+    args = parser.parse_args()
+
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        print("[ERREUR] ultralytics non installé. Lancez : pip install ultralytics")
+        return
+
+    data_yaml = Path(__file__).parent / "dataset" / "dataset.yaml"
+    if not data_yaml.exists():
+        print(f"[ERREUR] dataset.yaml introuvable : {{data_yaml}}")
+        print("Vérifiez que le dossier dataset/ est au même niveau que ce script.")
+        return
+
+    model = YOLO(args.model)
+
+    train_kwargs = dict(
+        data=str(data_yaml),
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
+        workers=args.workers,
+        project=args.project,
+        name=args.name,
+        resume=args.resume,
+        exist_ok=True,
+    )
+    if args.device:
+        train_kwargs["device"] = args.device
+
+    print(f"\n🚀  Démarrage de l\'entraînement — dataset : {{data_yaml}}")
+    print(f"    Modèle   : {{args.model}}")
+    print(f"    Epochs   : {{args.epochs}}")
+    print(f"    Img size : {{args.imgsz}}")
+    print(f"    Batch    : {{args.batch}}")
+    print(f"    Résultats: {{args.project}}/{{args.name}}\\n")
+
+    results = model.train(**train_kwargs)
+    print("\n✅  Entraînement terminé.")
+    print(f"    Meilleurs poids : {{args.project}}/{{args.name}}/weights/best.pt")
+
+    # Validation finale
+    metrics = model.val()
+    print(f"\n📊  Résultats validation :")
+    print(f"    mAP50-95 seg : {{metrics.seg.map:.4f}}")
+    print(f"    mAP50    seg : {{metrics.seg.map50:.4f}}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+# ─── Session Routes ──────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sanitize")
 async def sanitize_name_endpoint(name: str = Query(...)):
@@ -597,7 +659,6 @@ async def save_annotation(name: str, stem: str, data: dict):
     img_width = data.get("image_width", 1)
     img_height = data.get("image_height", 1)
 
-    # ── Uniformisation : rééchantillonnage équidistant ──────────────────────────────────
     if points and len(points) >= 2:
         target_n = _get_session_target_n(name, len(points))
         points = _resample_equidistant(points, target_n)
@@ -605,7 +666,6 @@ async def save_annotation(name: str, stem: str, data: dict):
         data["n_points_normalized"] = target_n
         _retroactively_resample_session(name, target_n)
 
-    # ── Calcul des angles ──────────────────────────────────────────────────────────────
     if points and len(points) >= 2:
         angle_data = calc_cable_angle(points)
         data["cable_angle_deg"] = angle_data["cable_angle_deg"]
@@ -617,7 +677,6 @@ async def save_annotation(name: str, stem: str, data: dict):
     with open(ann_path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    # ── Label YOLO ─────────────────────────────────────────────────────────────────────────────
     mode = data.get("annotation_mode", "centerline")
     if mode == "contour" and "left_points" in data and "right_points" in data:
         left = data["left_points"]
@@ -626,7 +685,6 @@ async def save_annotation(name: str, stem: str, data: dict):
     else:
         write_yolo_label(name, stem, points, img_width, img_height)
 
-    # ── Mise à jour du statut image ─────────────────────────────────────────────────────────
     for img in meta["images"]:
         if Path(img["filename"]).stem == stem:
             img["status"] = "annotated"
@@ -694,7 +752,7 @@ async def export_download(name: str):
     train_imgs = annotated[:split]
     val_imgs = annotated[split:]
 
-    # Préfixe dataset/ dans tous les chemins ZIP
+    dataset_name = name
     ROOT = "dataset/"
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -714,9 +772,17 @@ async def export_download(name: str):
                     zf.write(ann_path, f"{ROOT}metadata/{split_name}/{stem}.json")
                 csv_items.append((split_name, name, fn, ann_path))
 
-        yaml_content = f"path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n"
+        yaml_content = (
+            f"# Dataset : {dataset_name}\n"
+            f"path: ./dataset\n"
+            f"train: images/train\n"
+            f"val: images/val\n"
+            f"nc: 1\n"
+            f"names: ['cable']\n"
+        )
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
+        zf.writestr("train_yolo.py", _build_train_script(dataset_name))
 
     buf.seek(0)
     return StreamingResponse(
@@ -727,7 +793,6 @@ async def export_download(name: str):
 
 @app.get("/api/export/global/download")
 async def global_export_download(sessions: Optional[List[str]] = Query(None)):
-    # Si sessions est fourni (sélection), on filtre ; sinon toutes les sessions
     if sessions:
         session_names = sessions
     else:
@@ -755,6 +820,8 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     train_imgs = all_annotated[:split]
     val_imgs = all_annotated[split:]
 
+    label = "_".join(session_names[:3]) if sessions else "global"
+    dataset_name = label
     ROOT = "dataset/"
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -777,12 +844,19 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
                     zf.write(ann_path, f"{ROOT}metadata/{split_name}/{unique_stem}.json")
                 csv_items.append((split_name, session_name, unique_fn, ann_path))
 
-        yaml_content = "path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n"
+        yaml_content = (
+            f"# Dataset : {dataset_name}\n"
+            f"path: ./dataset\n"
+            f"train: images/train\n"
+            f"val: images/val\n"
+            f"nc: 1\n"
+            f"names: ['cable']\n"
+        )
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
+        zf.writestr("train_yolo.py", _build_train_script(dataset_name))
 
     buf.seek(0)
-    label = "_".join(session_names[:3]) if sessions else "global"
     return StreamingResponse(
         buf,
         media_type="application/zip",
@@ -790,7 +864,7 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     )
 
 
-# ─── Statistics ────────────────────────────────────────────────────────────────────────────────────────────
+# ─── Statistics ──────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/statistics")
 async def get_statistics(name: str):
@@ -862,7 +936,7 @@ async def get_statistics(name: str):
     }
 
 
-# ─── Train Vc (ResNet18 per session) ─────────────────────────────────────────────────────────────────────────────────────
+# ─── Train Vc (ResNet18 per session) ────────────────────────────────────────────────────────────
 
 def run_train_session(session_name: str, epochs: int):
     torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
@@ -899,9 +973,7 @@ def run_train_session(session_name: str, epochs: int):
         split = max(1, int(len(samples) * 0.8))
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
-
         all_angle_vc_pts = _build_angle_vc_pts(samples)
-
         tf_train = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
@@ -969,7 +1041,6 @@ def run_train_session(session_name: str, epochs: int):
         rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
         model_filename = f"{session_name}_vc_model.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
-
         all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
         model.eval()
         all_preds = []
@@ -993,7 +1064,6 @@ def run_train_session(session_name: str, epochs: int):
             except Exception:
                 continue
         nn_angle_vc_pts.sort(key=lambda d: d["theta"])
-
         TRAIN_PROGRESS[session_name].update({
             "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
             "preds": [round(float(p), 2) for p in preds_list],
@@ -1017,7 +1087,7 @@ async def get_train_progress(name: str):
     return TRAIN_PROGRESS.get(name, {"epoch": 0, "total_epochs": 0, "status": "idle"})
 
 
-# ─── Angle-Vc data (par session) ───────────────────────────────────────────────────────────────────
+# ─── Angle-Vc data (par session) ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/sessions/{name}/angle-vc-data")
 async def get_session_angle_vc_data(name: str):
@@ -1046,7 +1116,7 @@ async def get_session_angle_vc_data(name: str):
     return result
 
 
-# ─── Train Global Vc ───────────────────────────────────────────────────────────────────────────────────────
+# ─── Train Global Vc ──────────────────────────────────────────────────────────────────────────────
 
 def run_train_global(session_names: Optional[List[str]], epochs: int, model_name: str):
     torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
@@ -1092,9 +1162,7 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         split = max(1, int(len(samples) * 0.8))
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
-
         all_angle_vc_pts = _build_angle_vc_pts(samples)
-
         tf_train = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.RandomHorizontalFlip(),
@@ -1162,7 +1230,6 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         rmse = float(np.sqrt(np.mean((preds_arr - true_arr) ** 2)))
         model_filename = f"{model_name}.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
-
         all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
         model.eval()
         all_preds = []
@@ -1186,7 +1253,6 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
             except Exception:
                 continue
         nn_angle_vc_pts.sort(key=lambda d: d["theta"])
-
         GLOBAL_TRAIN_PROGRESS[key].update({
             "status": "done", "mae": round(mae, 3), "rmse": round(rmse, 3),
             "preds": [round(float(p), 2) for p in preds_list],
@@ -1242,16 +1308,14 @@ async def get_angle_vc_data():
                 vc_raw = ann_get(ann, "current_speed_cm_s")
                 if theta_raw in ("", None) or vc_raw in ("", None):
                     continue
-                theta = float(theta_raw)
-                vc = float(vc_raw)
-                result.append({"theta": round(theta, 3), "vc": round(vc, 3)})
+                result.append({"theta": round(float(theta_raw), 3), "vc": round(float(vc_raw), 3)})
             except (ValueError, TypeError, KeyError):
                 continue
     result.sort(key=lambda d: d["theta"])
     return result
 
 
-# ─── Models ──────────────────────────────────────────────────────────────────────────────────────────────
+# ─── Models ────────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/models")
 async def list_models():
@@ -1280,7 +1344,7 @@ async def download_model(filename: str):
     )
 
 
-# ─── Predict Vc ───────────────────────────────────────────────────────────────────────────────────────────
+# ─── Predict Vc ──────────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/predict")
 async def predict_vc(model_name: str = Form(...), file: UploadFile = File(...)):
