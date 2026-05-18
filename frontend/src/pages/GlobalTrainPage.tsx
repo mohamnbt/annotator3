@@ -51,15 +51,27 @@ export default function GlobalTrainPage() {
   const [predError, setPredError] = useState("");
   const [predicting, setPredicting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [vcSource, setVcSource] = useState("");
+  const [vcLoading, setVcLoading] = useState(false);
   const [angleVcData, setAngleVcData] = useState<{theta: number, vc: number}[]>([]);
   const pollRef = useRef<any>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const loadAngleVc = () => {
-    fetch("/api/train/global/angle-vc-data")
+  const loadAngleVc = (source: string) => {
+    setVcLoading(true);
+    let url = "/api/train/global/angle-vc-data";
+    if (source) {
+      if (source.startsWith("folder:")) {
+        url += `?folder=${encodeURIComponent(source.replace("folder:", ""))}`;
+      } else {
+        url += `?sessions=${encodeURIComponent(source)}`;
+      }
+    }
+    fetch(url)
       .then(r => r.ok ? r.json() : [])
       .then(d => setAngleVcData(d))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setVcLoading(false));
   };
 
   useEffect(() => {
@@ -68,8 +80,8 @@ export default function GlobalTrainPage() {
     getGlobalTrainProgress().then(p => {
       if (p.status === "running" || p.status === "done") setProgress(p);
     }).catch(() => {});
-    loadAngleVc();
-  }, []);
+    loadAngleVc(vcSource);
+  }, [vcSource]);
 
   const loadModels = async () => {
     try {
@@ -375,88 +387,116 @@ export default function GlobalTrainPage() {
       )}
 
       {/* Graphique Vc = f(θ) — toujours visible dès qu'il y a des données */}
-      {annotPts.length >= 3 && (
-        <div className="card animate-fade-in">
-          <h4 className="text-sm font-bold mb-1">📐 Vc = f(θ) — angle PCA du câble</h4>
-          <p className="text-[10px] text-dim mb-1">
-            <span className="text-accent font-mono">🔵 Annotations : Vc = {regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s</span>
-            <span className="ml-2 text-dim">(R² = {regAnnot.r2.toFixed(3)})</span>
-          </p>
-          {regModelLine.length > 0 && (
-            <p className="text-[10px] text-dim mb-3">
-              <span className="text-green font-mono">🟢 Modèle NN : Vc = {regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s</span>
-              <span className="ml-2 text-dim">(R² = {regModel.r2.toFixed(3)})</span>
+      <div className="card animate-fade-in">
+        <div className="flex justify-between items-center mb-4">
+          <h4 className="text-sm font-bold">📐 Vc = f(θ) — angle PCA du câble</h4>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-dim uppercase font-bold">Source :</span>
+            <select
+              className="text-xs p-1 h-8 min-w-[180px]"
+              value={vcSource}
+              onChange={e => setVcSource(e.target.value)}
+            >
+              <option value="">🌍 Toutes les sessions</option>
+              {Array.from(new Set(sessions.map(s => s.folder).filter(Boolean))).map(f => (
+                <option key={`folder:${f}`} value={`folder:${f}`}>📁 Dossier: {f}</option>
+              ))}
+              <optgroup label="── Par session ──">
+                {sessions.map(s => (
+                  <option key={s.name} value={s.name}>📂 {s.name}</option>
+                ))}
+              </optgroup>
+            </select>
+            {vcLoading && <span className="text-[10px] text-accent animate-pulse">⏳</span>}
+          </div>
+        </div>
+
+        {annotPts.length < 3 ? (
+          <div className="py-12 text-center text-dim text-xs border border-dashed border-border rounded-xl">
+            Pas assez de données pour cette source.
+          </div>
+        ) : (
+          <>
+            <p className="text-[10px] text-dim mb-1">
+              <span className="text-accent font-mono">🔵 Annotations : Vc = {regAnnot.a.toFixed(3)}·θ {regAnnot.b >= 0 ? "+" : ""}{regAnnot.b.toFixed(2)} cm/s</span>
+              <span className="ml-2 text-dim">(R² = {regAnnot.r2.toFixed(3)})</span>
             </p>
-          )}
-          <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart margin={{ top: 10, right: 20, bottom: 40, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis
-                type="number"
-                dataKey="x"
-                domain={[tMin, tMax]}
-                ticks={tTicks}
-                tickFormatter={v => v.toFixed(1)}
-                label={{ value: "θ (°)", position: "insideBottom", offset: -25, fontSize: 11, fill: "var(--color-text-dim)" }}
-                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
-              />
-              <YAxis
-                type="number"
-                dataKey="y"
-                domain={[vMin, vMax]}
-                ticks={vTicks}
-                tickFormatter={v => v.toFixed(1)}
-                label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
-                tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
-                axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
-              />
-              <Tooltip
-                contentStyle={TS}
-                formatter={(v: any, name: string) =>
-                  name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, name]
-                }
-              />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
+            {regModelLine.length > 0 && (
+              <p className="text-[10px] text-dim mb-3">
+                <span className="text-green font-mono">🟢 Modèle NN : Vc = {regModel.a.toFixed(3)}·θ {regModel.b >= 0 ? "+" : ""}{regModel.b.toFixed(2)} cm/s</span>
+                <span className="ml-2 text-dim">(R² = {regModel.r2.toFixed(3)})</span>
+              </p>
+            )}
+            <ResponsiveContainer width="100%" height={320}>
+              <ComposedChart margin={{ top: 10, right: 20, bottom: 40, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+                <XAxis
+                  type="number"
+                  dataKey="x"
+                  domain={[tMin, tMax]}
+                  ticks={tTicks}
+                  tickFormatter={v => v.toFixed(1)}
+                  label={{ value: "θ (°)", position: "insideBottom", offset: -25, fontSize: 11, fill: "var(--color-text-dim)" }}
+                  tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                  axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="y"
+                  domain={[vMin, vMax]}
+                  ticks={vTicks}
+                  tickFormatter={v => v.toFixed(1)}
+                  label={{ value: "Vc (cm/s)", angle: -90, position: "insideLeft", offset: 15, fontSize: 11, fill: "var(--color-text-dim)" }}
+                  tick={{ fontSize: 10, fill: "var(--color-text-dim)" }}
+                  axisLine={{ stroke: "var(--color-border)" }} tickLine={false}
+                />
+                <Tooltip
+                  contentStyle={TS}
+                  formatter={(v: any, name: string) =>
+                    name === "θ" ? [`${v}°`, "θ"] : [`${v} cm/s`, name]
+                  }
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
 
-              {/* Nuage — annotations */}
-              <Scatter data={annotPts} fill="var(--color-accent)" opacity={0.65} name="Annotations" />
+                {/* Nuage — annotations */}
+                <Scatter data={annotPts} fill="var(--color-accent)" opacity={0.65} name="Annotations" />
 
-              {/* Droite régression — annotations */}
-              <Line
-                data={regAnnotLine}
-                dataKey="yAnnot"
-                dot={false}
-                stroke="var(--color-accent)"
-                strokeWidth={2}
-                legendType="none"
-                name="Régression annot."
-                isAnimationActive={false}
-              />
-
-              {/* Nuage — prédictions modèle NN */}
-              {modelPredPts.length > 0 && (
-                <Scatter data={modelPredPts} fill="var(--color-green)" opacity={0.8} name="Modèle NN" />
-              )}
-
-              {/* Droite régression — modèle NN */}
-              {regModelLine.length > 0 && (
+                {/* Droite régression — annotations */}
                 <Line
-                  data={regModelLine}
-                  dataKey="yModel"
+                  data={regAnnotLine}
+                  dataKey="yAnnot"
                   dot={false}
-                  stroke="var(--color-green)"
+                  stroke="var(--color-accent)"
                   strokeWidth={2}
-                  strokeDasharray="6 3"
                   legendType="none"
-                  name="Régression NN"
+                  name="Régression annot."
                   isAnimationActive={false}
                 />
-              )}
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
-      )}
+
+                {/* Nuage — prédictions modèle NN */}
+                {modelPredPts.length > 0 && (
+                  <Scatter data={modelPredPts} fill="var(--color-green)" opacity={0.8} name="Modèle NN" />
+                )}
+
+                {/* Droite régression — modèle NN */}
+                {regModelLine.length > 0 && (
+                  <Line
+                    data={regModelLine}
+                    dataKey="yModel"
+                    dot={false}
+                    stroke="var(--color-green)"
+                    strokeWidth={2}
+                    strokeDasharray="6 3"
+                    legendType="none"
+                    name="Régression NN"
+                    isAnimationActive={false}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </>
+        )}
+      </div>
     </div>
   );
 }

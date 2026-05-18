@@ -1,0 +1,36 @@
+{
+  "name": "DJI_20260505101906_0032_D",
+  "description": "",
+  "created_at": "2026-05-06T15:50:35.306399",
+  "images": [
+    {
+      "filename": "DJI_20260505101906_0032_D_frame_000000.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-06T15:50:57.844075",
+      "source_video": "DJI_20260505101906_0032_D.MP4",
+      "source_frame": 0
+    },
+    {
+      "filename": "DJI_20260505101906_0032_D_frame_001000.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-06T15:51:20.443017",
+      "source_video": "DJI_20260505101906_0032_D.MP4",
+      "source_frame": 1000
+    },
+    {
+      "filename": "DJI_20260505101906_0032_D_frame_002000.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-06T15:51:42.493394",
+      "source_video": "DJI_20260505101906_0032_D.MP4",
+      "source_frame": 2000
+    },
+    {
+      "filename": "DJI_20260505101906_0032_D_frame_003000.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-06T15:52:03.937807",
+      "source_video": "DJI_20260505101906_0032_D.MP4",
+      "source_frame": 3000
+    }
+  ],
+  "folder": "1ere Config (30cm) Courbure"
+}

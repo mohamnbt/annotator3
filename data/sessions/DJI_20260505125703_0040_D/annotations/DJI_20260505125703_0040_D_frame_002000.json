@@ -1,0 +1,58 @@
+{
+  "points": [
+    {
+      "x": 395,
+      "y": 6
+    },
+    {
+      "x": 431,
+      "y": 233
+    },
+    {
+      "x": 485,
+      "y": 502
+    },
+    {
+      "x": 527,
+      "y": 674
+    },
+    {
+      "x": 567,
+      "y": 842
+    },
+    {
+      "x": 656,
+      "y": 1132
+    },
+    {
+      "x": 735,
+      "y": 1378
+    },
+    {
+      "x": 821,
+      "y": 1584
+    },
+    {
+      "x": 914,
+      "y": 1790
+    },
+    {
+      "x": 961,
+      "y": 1884
+    }
+  ],
+  "annotation_mode": "centerline",
+  "conditions": {
+    "annotator_name": "Amine",
+    "current_speed_cm_s": 17.1,
+    "current_direction": "Unidirectionnel",
+    "camera_angle": "Latéral gauche",
+    "water_turbidity": "Légèrement turbide",
+    "lighting_condition": "Mixte",
+    "immersed_length_cm": 30,
+    "canal_water_depth_cm": 34.1
+  },
+  "image_width": 1080,
+  "image_height": 1920,
+  "saved_at": "2026-05-07T10:09:30.750786"
+}

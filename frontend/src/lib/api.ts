@@ -167,6 +167,8 @@ export const getExportStats = (name: string): Promise<ExportStats> =>
   req(`/api/sessions/${name}/export/stats`);
 export const exportDownloadUrl = (name: string) =>
   `${BASE}/api/sessions/${name}/export/download`;
+export const exportBatchUrl = (names: string[]) =>
+  `${BASE}/api/export/global/download?sessions=${encodeURIComponent(names.join(","))}`;
 export const getStatistics = (name: string): Promise<Statistics> =>
   req(`/api/sessions/${name}/statistics`);
 
@@ -182,10 +184,25 @@ export const trainSessionModel = (name: string, epochs = 50) => {
 export const getTrainProgress = (name: string): Promise<TrainProgress> =>
   req(`/api/sessions/${name}/train/progress`);
 
-export const getAngleVcData = (sessionName?: string): Promise<{ theta: number; vc: number }[]> =>
-  req(sessionName
-    ? `/api/sessions/${encodeURIComponent(sessionName)}/angle-vc-data`
-    : `/api/train/global/angle-vc-data`);
+export const getAngleVcData = (opts?: string | { sessionName?: string; sessions?: string; folder?: string }): Promise<{ theta: number; vc: number }[]> => {
+  if (typeof opts === "string") {
+    // Rétrocompatibilité : si c'est une string, on considère que c'est une session unique
+    return req(`/api/sessions/${encodeURIComponent(opts)}/angle-vc-data`);
+  }
+  if (opts?.sessionName) {
+    return req(`/api/sessions/${encodeURIComponent(opts.sessionName)}/angle-vc-data`);
+  }
+  let url = "/api/train/global/angle-vc-data";
+  const params = new URLSearchParams();
+  if (opts?.sessions) params.append("sessions", opts.sessions);
+  if (opts?.folder) params.append("folder", opts.folder);
+  const qs = params.toString();
+  if (qs) url += `?${qs}`;
+  return req(url);
+};
+
+export const visualizeModel = (modelName: string): Promise<{ theta: number; vc_real: number; vc_pred: number }[]> =>
+  req(`/api/models/${encodeURIComponent(modelName)}/visualize`);
 
 export const trainGlobalModel = (opts: { sessions?: string; epochs?: number; model_name?: string }) => {
   const fd = new FormData();
@@ -206,3 +223,5 @@ export const predictVc = (modelName: string, file: File): Promise<{ vitesse_esti
 };
 export const modelDownloadUrl = (filename: string) =>
   `${BASE}/api/models/${encodeURIComponent(filename)}/download`;
+export const modelScriptUrl = (modelName: string) =>
+  `${BASE}/api/models/${encodeURIComponent(modelName)}/training-script`;

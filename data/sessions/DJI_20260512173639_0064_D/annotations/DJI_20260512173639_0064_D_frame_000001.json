@@ -1,0 +1,50 @@
+{
+  "points": [
+    {
+      "x": 674.0,
+      "y": 502.0
+    },
+    {
+      "x": 678.6785145070567,
+      "y": 710.4085005897375
+    },
+    {
+      "x": 692.7226713623974,
+      "y": 918.4099504246908
+    },
+    {
+      "x": 712.0158372397258,
+      "y": 1125.9914040117778
+    },
+    {
+      "x": 734.0469718454616,
+      "y": 1333.3104158377637
+    },
+    {
+      "x": 759.8138159554628,
+      "y": 1540.1866702701586
+    },
+    {
+      "x": 793.0,
+      "y": 1746.0
+    }
+  ],
+  "annotation_mode": "centerline",
+  "conditions": {
+    "annotator_name": "Amine",
+    "current_speed_cm_s": 14,
+    "current_direction": "Unidirectionnel",
+    "camera_angle": "Latéral gauche",
+    "water_turbidity": "Légèrement turbide",
+    "lighting_condition": "Lumière artificielle",
+    "immersed_length_cm": 25,
+    "canal_water_depth_cm": 29.25
+  },
+  "image_width": 1080,
+  "image_height": 1920,
+  "n_points_normalized": 7,
+  "cable_angle_deg": 5.515,
+  "cable_angle_chord_deg": 5.464,
+  "cable_curvature_index": 0.051,
+  "saved_at": "2026-05-15T17:53:12.216750"
+}

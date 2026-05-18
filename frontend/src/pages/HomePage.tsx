@@ -2,10 +2,14 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import {
   listSessions, createSession, deleteSession, sanitizeName,
-  batchMoveSessions, listModels, bulkImportVideos,
+  batchMoveSessions, listModels, bulkImportVideos, visualizeModel,
+  exportBatchUrl,
   type SessionMeta, type ModelMeta,
 } from "../lib/api";
 import AIPanel from "../components/AIPanel";
+import {
+  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from "recharts";
 
 const C = {
   bg: "#0D1117", surface: "#161B22", surface2: "#21262D",
@@ -285,6 +289,7 @@ export default function HomePage() {
             onClick={() => { setShowMoveModal(true); setMoveTarget(""); }}>
             📂 Déplacer vers dossier
           </button>
+<<<<<<< HEAD
           <button
             className="btn btn-secondary"
             style={{ fontSize: 12, color: C.green, borderColor: "rgba(0,255,136,0.4)" }}
@@ -292,6 +297,11 @@ export default function HomePage() {
           >
             ⬇ Export sélection
           </button>
+=======
+          <a href={exportBatchUrl(selArray)} className="btn btn-secondary" style={{ fontSize: 12, textDecoration: "none" }} download="batch_dataset.zip">
+            📦 Exporter la sélection
+          </a>
+>>>>>>> daa8eb8 (Mon code actuel)
           <button className="btn btn-red" style={{ fontSize: 12 }}
             onClick={() => setDeleteTargets(selArray)}>
             🗑 Supprimer la sélection
@@ -811,11 +821,28 @@ function GlobalAITrainer({ sessions, allFolders }: { sessions: SessionMeta[]; al
   const [selFolder, setSelFolder] = useState("");
   const [manualSessions, setManualSessions] = useState<Set<string>>(new Set());
   const [models, setModels] = useState<ModelMeta[]>([]);
+  const [vizModel, setVizModel] = useState<string | null>(null);
+  const [vizData, setVizData] = useState<{ theta: number; vc_real: number; vc_pred: number }[]>([]);
+  const [vizLoading, setVizLoading] = useState(false);
 
   useEffect(() => { listModels().then(setModels).catch(() => {}); }, []);
 
   const toggleSession = (name: string) => {
     setManualSessions(prev => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n; });
+  };
+
+  const handleVisualize = async (modelName: string) => {
+    if (vizModel === modelName) { setVizModel(null); setVizData([]); return; }
+    setVizModel(modelName);
+    setVizLoading(true);
+    try {
+      const d = await visualizeModel(modelName);
+      if (Array.isArray(d)) setVizData(d);
+    } catch {
+      setVizData([]);
+    } finally {
+      setVizLoading(false);
+    }
   };
 
   const getSessionsForTraining = () => {
@@ -824,6 +851,19 @@ function GlobalAITrainer({ sessions, allFolders }: { sessions: SessionMeta[]; al
   };
 
   const trainSessions = getSessionsForTraining();
+
+  // ── Logic de visualisation ────────────────────────────────────────────────
+  const vizPtsReal = vizData.map(d => ({ x: d.theta, y: d.vc_real }));
+  const vizPtsPred = vizData.map(d => ({ x: d.theta, y: d.vc_pred }));
+
+  const allVizTh = vizData.map(d => d.theta);
+  const vizThMin = allVizTh.length > 0 ? Math.min(...allVizTh) - 2 : 0;
+  const vizThMax = allVizTh.length > 0 ? Math.max(...allVizTh) + 2 : 90;
+  const allVizVc = vizData.flatMap(d => [d.vc_real, d.vc_pred]);
+  const vizVcMin = allVizVc.length > 0 ? Math.min(...allVizVc) - 2 : 0;
+  const vizVcMax = allVizVc.length > 0 ? Math.max(...allVizVc) + 2 : 40;
+
+  const TS = { background: "#161B22", border: "1px solid #30363D", borderRadius: 8, fontSize: 11 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -896,17 +936,60 @@ function GlobalAITrainer({ sessions, allFolders }: { sessions: SessionMeta[]; al
           <div style={{ padding: 20 }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {models.map(m => (
-                <div key={m.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#0D1117", borderRadius: 10, border: "1px solid #30363D" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 18 }}>{m.is_global ? "🌍" : "📂"}</span>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>{m.name}</div>
-                      <div style={{ fontSize: 11, color: "#8B949E" }}>{m.size_mb} MB — {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+                <div key={m.name}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#0D1117", borderRadius: vizModel === m.name ? "10px 10px 0 0" : 10, border: vizModel === m.name ? "1px solid #00FFFF" : "1px solid #30363D" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 18 }}>{m.is_global ? "🌍" : "📂"}</span>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>{m.name}</div>
+                        <div style={{ fontSize: 11, color: "#8B949E" }}>{m.size_mb} MB — {new Date(m.modified_at).toLocaleDateString("fr-FR")}</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button className="btn btn-secondary" style={{ fontSize: 12 }} onClick={() => handleVisualize(m.name)}>
+                        {vizLoading && vizModel === m.name ? "⏳..." : vizModel === m.name ? "✕ Fermer" : "📈 Visualiser"}
+                      </button>
+                      <a href={`http://localhost:8000/api/models/${encodeURIComponent(m.name)}/training-script`} className="btn btn-secondary" style={{ fontSize: 12, textDecoration: "none" }} download={`train_${m.name}.py`}>
+                        📜 Script
+                      </a>
+                      <a href={`http://localhost:8000/api/models/${encodeURIComponent(m.filename)}/download`} className="btn btn-secondary" style={{ fontSize: 12, textDecoration: "none" }} download={m.filename}>
+                        ⬇ Modèle
+                      </a>
                     </div>
                   </div>
-                  <a href={`http://localhost:8000/api/models/${encodeURIComponent(m.filename)}/download`} className="btn btn-secondary" style={{ fontSize: 12, textDecoration: "none" }} download={m.filename}>
-                    ⬇ Télécharger
-                  </a>
+
+                  {vizModel === m.name && (
+                    <div style={{ padding: 20, background: "rgba(0,255,255,0.02)", border: "1px solid #00FFFF", borderTop: "none", borderRadius: "0 0 10px 10px" }}>
+                      {vizLoading ? (
+                        <div style={{ textAlign: "center", color: "#8B949E", padding: 20 }}>⏳ Calcul des prédictions...</div>
+                      ) : vizData.length === 0 ? (
+                        <div style={{ textAlign: "center", color: "#8B949E", padding: 20 }}>Pas de données d'annotation pour ce modèle.</div>
+                      ) : (
+                        <>
+                          <div style={{ display: "flex", gap: 20, marginBottom: 16, fontSize: 11 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#00FFFF" }} />
+                              <span style={{ color: "#E6EDF3" }}>Réel (Annotations)</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#00FF88" }} />
+                              <span style={{ color: "#E6EDF3" }}>Modèle (Prédictions)</span>
+                            </div>
+                          </div>
+                          <ResponsiveContainer width="100%" height={260}>
+                            <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 0 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#30363D" />
+                              <XAxis type="number" dataKey="x" name="θ" unit="°" domain={[vizThMin, vizThMax]} tick={{ fontSize: 10, fill: "#8B949E" }} />
+                              <YAxis type="number" dataKey="y" name="Vc" unit="cm/s" domain={[vizVcMin, vizVcMax]} tick={{ fontSize: 10, fill: "#8B949E" }} />
+                              <Tooltip contentStyle={TS} />
+                              <Scatter name="Réel" data={vizPtsReal} fill="#00FFFF" opacity={0.6} />
+                              <Scatter name="Prédit" data={vizPtsPred} fill="#00FF88" opacity={0.8} />
+                            </ScatterChart>
+                          </ResponsiveContainer>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

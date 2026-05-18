@@ -1,0 +1,32 @@
+{
+  "name": "DJI_20260512172515_0061_D",
+  "description": "Import vidéo : DJI_20260512172515_0061_D.MP4",
+  "folder": "2eme Config Rigide 25cm (Modèle Physique Friendly)",
+  "created_at": "2026-05-15T17:06:05.591521",
+  "images": [
+    {
+      "filename": "DJI_20260512172515_0061_D_frame_000001.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-15T17:09:31.674140",
+      "source_video": "DJI_20260512172515_0061_D.MP4"
+    },
+    {
+      "filename": "DJI_20260512172515_0061_D_frame_000002.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-15T17:09:31.674248",
+      "source_video": "DJI_20260512172515_0061_D.MP4"
+    },
+    {
+      "filename": "DJI_20260512172515_0061_D_frame_000003.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-15T17:09:31.674277",
+      "source_video": "DJI_20260512172515_0061_D.MP4"
+    },
+    {
+      "filename": "DJI_20260512172515_0061_D_frame_000004.jpg",
+      "status": "annotated",
+      "added_at": "2026-05-15T17:09:31.674303",
+      "source_video": "DJI_20260512172515_0061_D.MP4"
+    }
+  ]
+}

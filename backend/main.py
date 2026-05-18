@@ -727,6 +727,7 @@ async def export_download(name: str):
     )
 
 @app.get("/api/export/global/download")
+<<<<<<< HEAD
 async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     if sessions:
         session_names = sessions
@@ -735,6 +736,20 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
             d.name for d in sorted(DATA_DIR.iterdir())
             if d.is_dir() and (d / "session.json").exists()
         ]
+=======
+async def global_export_download(sessions: Optional[str] = Query(None)):
+    all_sessions = []
+    session_filter = [s.strip() for s in sessions.split(",") if s.strip()] if sessions else None
+
+    for d in sorted(DATA_DIR.iterdir()):
+        if d.is_dir() and (d / "session.json").exists():
+            if session_filter and d.name not in session_filter:
+                continue
+            try:
+                all_sessions.append(load_session_meta(d.name))
+            except Exception:
+                continue
+>>>>>>> daa8eb8 (Mon code actuel)
 
     all_annotated = []
     for sname in session_names:
@@ -754,6 +769,7 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     split = int(len(all_annotated) * 0.8)
     train_imgs = all_annotated[:split]
     val_imgs = all_annotated[split:]
+<<<<<<< HEAD
 
     label = "_".join(session_names[:3]) if sessions else "global"
     dataset_name = label
@@ -761,6 +777,21 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         csv_items = []
+=======
+    
+    fieldnames = [
+        "session", "filename", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
+        "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
+        "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
+        "water_depth_m", "cable_tension_n", "notes", "split",
+    ]
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        csv_buf = io.StringIO()
+        writer = csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+
+>>>>>>> daa8eb8 (Mon code actuel)
         for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
             for session_name, img_meta in imgs:
                 session_dir = get_session_dir(session_name)
@@ -771,11 +802,13 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
                 img_path = session_dir / "images" / fn
                 lbl_path = session_dir / "labels" / f"{stem}.txt"
                 ann_path = session_dir / "annotations" / f"{stem}.json"
+                
                 if img_path.exists():
                     zf.write(img_path, f"{ROOT}images/{split_name}/{unique_fn}")
                 if lbl_path.exists():
                     zf.write(lbl_path, f"{ROOT}labels/{split_name}/{unique_stem}.txt")
                 if ann_path.exists():
+<<<<<<< HEAD
                     zf.write(ann_path, f"{ROOT}metadata/{split_name}/{unique_stem}.json")
                 csv_items.append((split_name, session_name, unique_fn, ann_path))
 
@@ -789,6 +822,25 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
         zf.writestr(f"{ROOT}train_yolo.py", _build_train_script(dataset_name))
+=======
+                    zf.write(ann_path, f"annotations/{split_name}/{session_name}__{stem}.json")
+                
+                # Ajout au CSV
+                row = {"session": session_name, "filename": unique, "split": split_name}
+                if ann_path.exists():
+                    with open(ann_path) as af:
+                        ann = json.load(af)
+                    flat = {k: v for k, v in ann.items() if k != "conditions"}
+                    row.update(flat)
+                    conditions = ann.get("conditions", {})
+                    for field in fieldnames:
+                        if field not in row and field in conditions:
+                            row[field] = conditions[field]
+                writer.writerow(row)
+
+        zf.writestr("dataset.yaml", "path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n")
+        zf.writestr("annotations.csv", csv_buf.getvalue())
+>>>>>>> daa8eb8 (Mon code actuel)
 
     buf.seek(0)
     return StreamingResponse(
@@ -798,7 +850,162 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     )
 
 
+<<<<<<< HEAD
 # ─── Statistics ──────────────────────────────────────────────────────────────────────────────────────────
+=======
+@app.get("/api/models/{model_name}/training-script")
+async def get_model_training_script(model_name: str):
+    """
+    Génère un script Python autonome pour réentraîner le modèle.
+    """
+    script_content = f"""# Script d'entraînement pour le modèle : {model_name}
+# Généré par COSMER Annotator
+#
+# Ce script utilise un ResNet18 pour prédire la vitesse du courant (Vc)
+# à partir des images de câbles sous-marins.
+#
+# INSTRUCTIONS :
+# 1. Exportez vos données depuis l'application (Export Global ou Session).
+# 2. Décompressez le zip dans un dossier 'dataset'.
+# 3. Placez ce script à côté du dossier 'dataset'.
+# 4. Installez les dépendances : pip install torch torchvision pandas Pillow
+# 5. Lancez le script : python train_{model_name}.py
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms, models
+from PIL import Image
+import pandas as pd
+import os
+import time
+
+# --- CONFIGURATION ---
+DATASET_PATH = "dataset"
+CSV_PATH = os.path.join(DATASET_PATH, "annotations.csv")
+MODEL_SAVE_PATH = "{model_name}_retrained.pth"
+EPOCHS = 50
+BATCH_SIZE = 16
+LEARNING_RATE = 1e-3
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print(f"--- Entraînement de {model_name} ---")
+print(f"Device : {{DEVICE}}")
+
+class VcDataset(Dataset):
+    def __init__(self, csv_data, transform=None):
+        self.data = csv_data
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        row = self.data.iloc[idx]
+        split = row['split']
+        filename = row['filename']
+        img_path = os.path.join(DATASET_PATH, "images", split, filename)
+        
+        image = Image.open(img_path).convert("RGB")
+        vc = torch.tensor([float(row['current_speed_cm_s'])], dtype=torch.float32)
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, vc
+
+# --- CHARGEMENT DES DONNÉES ---
+if not os.path.exists(CSV_PATH):
+    print(f"ERREUR : Fichier {{CSV_PATH}} introuvable. Avez-vous décompressé l'export dans le dossier '{{DATASET_PATH}}' ?")
+    exit(1)
+
+df = pd.read_csv(CSV_PATH)
+train_df = df[df['split'] == 'train']
+val_df = df[df['split'] == 'val']
+
+print(f"Train samples : {{len(train_df)}}")
+print(f"Val samples   : {{len(val_df)}}")
+
+tf_train = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+tf_val = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+train_loader = DataLoader(VcDataset(train_df, tf_train), batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(VcDataset(val_df, tf_val), batch_size=BATCH_SIZE)
+
+# --- MODÈLE ---
+model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+model.fc = nn.Sequential(
+    nn.Linear(512, 128),
+    nn.ReLU(),
+    nn.Dropout(0.3),
+    nn.Linear(128, 1)
+)
+model = model.to(DEVICE)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+criterion = nn.MSELoss()
+
+# --- BOUCLE D'ENTRAÎNEMENT ---
+best_val_loss = float('inf')
+
+for epoch in range(EPOCHS):
+    start_time = time.time()
+    
+    # Train
+    model.train()
+    train_loss = 0
+    for images, targets in train_loader:
+        images, targets = images.to(DEVICE), targets.to(DEVICE)
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item()
+    
+    # Val
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for images, targets in val_loader:
+            images, targets = images.to(DEVICE), targets.to(DEVICE)
+            outputs = model(images)
+            loss = criterion(outputs, targets)
+            val_loss += loss.item()
+    
+    avg_train = train_loss / len(train_loader)
+    avg_val = val_loss / len(val_loader)
+    duration = time.time() - start_time
+    
+    print(f"Epoch [{{epoch+1}}/{{EPOCHS}}] - Train Loss: {{avg_train:.4f}}, Val Loss: {{avg_val:.4f}} ({{duration:.1f}}s)")
+    
+    if avg_val < best_val_loss:
+        best_val_loss = avg_val
+        torch.save(model.state_dict(), MODEL_SAVE_PATH)
+        print(f"  --> Modèle sauvegardé sous {{MODEL_SAVE_PATH}}")
+
+print("\\nEntraînement terminé !")
+"""
+    return StreamingResponse(
+        io.BytesIO(script_content.encode()),
+        media_type="text/x-python",
+        headers={"Content-Disposition": f"attachment; filename=train_{model_name}.py"}
+    )
+
+
+# ─── Statistics ────────────────────────────────────────────────────────────────────────────────────────────
+>>>>>>> daa8eb8 (Mon code actuel)
 
 @app.get("/api/sessions/{name}/statistics")
 async def get_statistics(name: str):
@@ -1216,26 +1423,45 @@ async def get_global_train_progress():
 
 
 @app.get("/api/train/global/angle-vc-data")
+<<<<<<< HEAD
 async def get_angle_vc_data():
+=======
+async def get_angle_vc_data(sessions: Optional[str] = Query(None), folder: Optional[str] = Query(None)):
+    """
+    Retourne [{theta, vc}] pour un ensemble de sessions ou un dossier.
+    """
+>>>>>>> daa8eb8 (Mon code actuel)
     result = []
     if not DATA_DIR.exists():
         return result
-    for d in sorted(DATA_DIR.iterdir()):
-        if not d.is_dir() or not (d / "session.json").exists():
-            continue
+    
+    session_list = []
+    if sessions:
+        session_list = [s.strip() for s in sessions.split(",") if s.strip()]
+    elif folder:
+        for d in DATA_DIR.iterdir():
+            if d.is_dir() and (d / "session.json").exists():
+                try:
+                    meta = load_session_meta(d.name)
+                    if meta.get("folder") == folder:
+                        session_list.append(d.name)
+                except Exception:
+                    continue
+    else:
+        session_list = [d.name for d in DATA_DIR.iterdir() if d.is_dir() and (d / "session.json").exists()]
+
+    for sname in session_list:
         try:
-            meta = load_session_meta(d.name)
-        except Exception:
-            continue
-        ann_dir = d / "annotations"
-        for img in meta["images"]:
-            if img["status"] != "annotated":
-                continue
-            stem = Path(img["filename"]).stem
-            ann_path = ann_dir / f"{stem}.json"
-            if not ann_path.exists():
-                continue
-            try:
+            meta = load_session_meta(sname)
+            session_dir = get_session_dir(sname)
+            ann_dir = session_dir / "annotations"
+            for img in meta["images"]:
+                if img["status"] != "annotated":
+                    continue
+                stem = Path(img["filename"]).stem
+                ann_path = ann_dir / f"{stem}.json"
+                if not ann_path.exists():
+                    continue
                 with open(ann_path) as f:
                     ann = json.load(f)
                 theta_raw = ann.get("cable_angle_deg")
@@ -1243,13 +1469,129 @@ async def get_angle_vc_data():
                 if theta_raw in ("", None) or vc_raw in ("", None):
                     continue
                 result.append({"theta": round(float(theta_raw), 3), "vc": round(float(vc_raw), 3)})
+<<<<<<< HEAD
             except (ValueError, TypeError, KeyError):
                 continue
+=======
+        except Exception:
+            continue
+>>>>>>> daa8eb8 (Mon code actuel)
     result.sort(key=lambda d: d["theta"])
     return result
 
 
+<<<<<<< HEAD
 # ─── Models ────────────────────────────────────────────────────────────────────────────────────────
+=======
+@app.get("/api/models/{model_name}/visualize")
+async def visualize_model(model_name: str):
+    """
+    Retourne [{theta, vc_real, vc_pred}] pour un modèle donné, en testant sur les images annotées.
+    """
+    torch, nn, Dataset, DataLoader, transforms, models, Image = get_torch_modules()
+    if torch is None:
+        raise HTTPException(status_code=503, detail="PyTorch non installé")
+    
+    model_path = MODELS_DIR / f"{model_name}.pth"
+    if not model_path.exists():
+        model_path = MODELS_DIR / model_name
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail=f"Modèle '{model_name}' introuvable")
+
+    # Déterminer les sessions à utiliser
+    if model_name.endswith("_vc_model"):
+        session_name = model_name.replace("_vc_model", "")
+        if (DATA_DIR / session_name).exists():
+            sessions_to_use = [session_name]
+        else:
+            sessions_to_use = [d.name for d in DATA_DIR.iterdir() if d.is_dir() and (d / "session.json").exists()]
+    else:
+        sessions_to_use = [d.name for d in DATA_DIR.iterdir() if d.is_dir() and (d / "session.json").exists()]
+
+    samples = []
+    for sname in sessions_to_use:
+        try:
+            meta = load_session_meta(sname)
+            session_dir = get_session_dir(sname)
+            ann_dir = session_dir / "annotations"
+            images_dir = session_dir / "images"
+            for img in meta["images"]:
+                if img["status"] != "annotated":
+                    continue
+                stem = Path(img["filename"]).stem
+                ann_path = ann_dir / f"{stem}.json"
+                img_path = images_dir / img["filename"]
+                if not ann_path.exists() or not img_path.exists():
+                    continue
+                with open(ann_path) as f:
+                    ann = json.load(f)
+                vc_raw = ann_get(ann, "current_speed_cm_s")
+                theta_raw = ann.get("cable_angle_deg")
+                try:
+                    vc = float(vc_raw)
+                    theta = float(theta_raw)
+                except (TypeError, ValueError):
+                    continue
+                samples.append({"img_path": str(img_path), "vc_real": vc, "theta": theta})
+        except Exception:
+            continue
+
+    if not samples:
+        return []
+
+    # Charger le modèle
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+    net = models.resnet18(weights=None)
+    net.fc = nn.Sequential(nn.Linear(512, 128), nn.ReLU(), nn.Dropout(0.3), nn.Linear(128, 1))
+    try:
+        net.load_state_dict(torch.load(model_path, map_location=device))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur chargement modèle: {e}")
+    
+    net = net.to(device)
+    net.eval()
+
+    tf = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+
+    results = []
+    batch_size = 16
+    for i in range(0, len(samples), batch_size):
+        batch = samples[i:i+batch_size]
+        batch_imgs = []
+        for s in batch:
+            try:
+                img = Image.open(s["img_path"]).convert("RGB")
+                batch_imgs.append(tf(img))
+            except Exception:
+                continue
+        
+        if not batch_imgs:
+            continue
+            
+        xb = torch.stack(batch_imgs).to(device)
+        with torch.no_grad():
+            out = net(xb).squeeze().cpu().tolist()
+            if isinstance(out, float):
+                out = [out]
+        
+        for j, s in enumerate(batch):
+            if j < len(out):
+                results.append({
+                    "theta": round(s["theta"], 3),
+                    "vc_real": round(s["vc_real"], 3),
+                    "vc_pred": round(out[j], 3)
+                })
+
+    results.sort(key=lambda x: x["theta"])
+    return results
+
+
+# ─── Models ──────────────────────────────────────────────────────────────────────────────────────────────
+>>>>>>> daa8eb8 (Mon code actuel)
 
 @app.get("/api/models")
 async def list_models():
