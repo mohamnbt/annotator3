@@ -309,6 +309,37 @@ def _build_angle_vc_pts(samples: list) -> list:
     return pts
 
 
+# ─── Helper CSV pour export ────────────────────────────────────────────────────────────────────
+CSV_FIELDNAMES = [
+    "filename", "session", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
+    "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
+    "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
+    "water_depth_m", "cable_tension_n", "notes", "split",
+]
+
+def _build_csv(items: list) -> str:
+    """
+    items = [(split_name, session_name, fn, ann_path), ...]
+    Retourne le contenu CSV sous forme de string.
+    """
+    csv_buf = io.StringIO()
+    writer = csv.DictWriter(csv_buf, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
+    writer.writeheader()
+    for split_name, session_name, fn, ann_path in items:
+        row = {"filename": fn, "session": session_name, "split": split_name}
+        if ann_path.exists():
+            with open(ann_path) as af:
+                ann = json.load(af)
+            flat = {k: v for k, v in ann.items() if k != "conditions"}
+            row.update(flat)
+            conditions = ann.get("conditions", {})
+            for field in CSV_FIELDNAMES:
+                if field not in row and field in conditions:
+                    row[field] = conditions[field]
+        writer.writerow(row)
+    return csv_buf.getvalue()
+
+
 # ─── Session Routes ─────────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/sanitize")
@@ -662,7 +693,12 @@ async def export_download(name: str):
     split = int(len(annotated) * 0.8)
     train_imgs = annotated[:split]
     val_imgs = annotated[split:]
+
+    # Préfixe dataset/ dans tous les chemins ZIP
+    ROOT = "dataset/"
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        csv_items = []
         for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
             for img_meta in imgs:
                 fn = img_meta["filename"]
@@ -671,44 +707,17 @@ async def export_download(name: str):
                 lbl_path = session_dir / "labels" / f"{stem}.txt"
                 ann_path = session_dir / "annotations" / f"{stem}.json"
                 if img_path.exists():
-                    zf.write(img_path, f"images/{split_name}/{fn}")
+                    zf.write(img_path, f"{ROOT}images/{split_name}/{fn}")
                 if lbl_path.exists():
-                    zf.write(lbl_path, f"labels/{split_name}/{stem}.txt")
+                    zf.write(lbl_path, f"{ROOT}labels/{split_name}/{stem}.txt")
                 if ann_path.exists():
-                    zf.write(ann_path, f"annotations/{split_name}/{stem}.json")
-        yaml_content = f"""path: ./dataset
-train: images/train
-val: images/val
-nc: 1
-names: ['cable']
-"""
-        zf.writestr("dataset.yaml", yaml_content)
-        csv_buf = io.StringIO()
-        fieldnames = [
-            "filename", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
-            "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
-            "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
-            "water_depth_m", "cable_tension_n", "notes", "split",
-        ]
-        writer = csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
-            for img_meta in imgs:
-                fn = img_meta["filename"]
-                stem = Path(fn).stem
-                ann_path = session_dir / "annotations" / f"{stem}.json"
-                row = {"filename": fn, "split": split_name}
-                if ann_path.exists():
-                    with open(ann_path) as af:
-                        ann = json.load(af)
-                    flat = {k: v for k, v in ann.items() if k != "conditions"}
-                    row.update(flat)
-                    conditions = ann.get("conditions", {})
-                    for field in fieldnames:
-                        if field not in row and field in conditions:
-                            row[field] = conditions[field]
-                writer.writerow(row)
-        zf.writestr("annotations.csv", csv_buf.getvalue())
+                    zf.write(ann_path, f"{ROOT}metadata/{split_name}/{stem}.json")
+                csv_items.append((split_name, name, fn, ann_path))
+
+        yaml_content = f"path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n"
+        zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
+        zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
+
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -717,46 +726,67 @@ names: ['cable']
     )
 
 @app.get("/api/export/global/download")
-async def global_export_download():
-    all_sessions = []
-    for d in sorted(DATA_DIR.iterdir()):
-        if d.is_dir() and (d / "session.json").exists():
-            all_sessions.append(load_session_meta(d.name))
+async def global_export_download(sessions: Optional[List[str]] = Query(None)):
+    # Si sessions est fourni (sélection), on filtre ; sinon toutes les sessions
+    if sessions:
+        session_names = sessions
+    else:
+        session_names = [
+            d.name for d in sorted(DATA_DIR.iterdir())
+            if d.is_dir() and (d / "session.json").exists()
+        ]
+
     all_annotated = []
-    for s in all_sessions:
+    for sname in session_names:
+        try:
+            s = load_session_meta(sname)
+        except Exception:
+            continue
         for img in s["images"]:
             if img["status"] == "annotated":
-                all_annotated.append((s["name"], img))
+                all_annotated.append((sname, img))
+
     if not all_annotated:
         raise HTTPException(status_code=404, detail="No annotated images across sessions")
+
     buf = io.BytesIO()
     random.shuffle(all_annotated)
     split = int(len(all_annotated) * 0.8)
     train_imgs = all_annotated[:split]
     val_imgs = all_annotated[split:]
+
+    ROOT = "dataset/"
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        csv_items = []
         for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
             for session_name, img_meta in imgs:
                 session_dir = get_session_dir(session_name)
                 fn = img_meta["filename"]
                 stem = Path(fn).stem
-                unique = f"{session_name}__{fn}"
+                unique_fn = f"{session_name}__{fn}"
+                unique_stem = f"{session_name}__{stem}"
                 img_path = session_dir / "images" / fn
                 lbl_path = session_dir / "labels" / f"{stem}.txt"
                 ann_path = session_dir / "annotations" / f"{stem}.json"
                 if img_path.exists():
-                    zf.write(img_path, f"images/{split_name}/{unique}")
+                    zf.write(img_path, f"{ROOT}images/{split_name}/{unique_fn}")
                 if lbl_path.exists():
-                    zf.write(lbl_path, f"labels/{split_name}/{session_name}__{stem}.txt")
+                    zf.write(lbl_path, f"{ROOT}labels/{split_name}/{unique_stem}.txt")
                 if ann_path.exists():
-                    zf.write(ann_path, f"annotations/{split_name}/{session_name}__{stem}.json")
+                    zf.write(ann_path, f"{ROOT}metadata/{split_name}/{unique_stem}.json")
+                csv_items.append((split_name, session_name, unique_fn, ann_path))
+
         yaml_content = "path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n"
-        zf.writestr("dataset.yaml", yaml_content)
+        zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
+        zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
+
     buf.seek(0)
+    label = "_".join(session_names[:3]) if sessions else "global"
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=global_dataset.zip"},
+        headers={"Content-Disposition": f"attachment; filename={label}_dataset.zip"},
     )
 
 
@@ -870,7 +900,6 @@ def run_train_session(session_name: str, epochs: int):
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
 
-        # Précalcul des paires (theta, vc) pour TOUS les samples (train + val)
         all_angle_vc_pts = _build_angle_vc_pts(samples)
 
         tf_train = transforms.Compose([
@@ -909,7 +938,7 @@ def run_train_session(session_name: str, epochs: int):
             "epoch": 0, "total_epochs": epochs, "status": "running",
             "n_train": len(train_samples), "n_val": len(val_samples),
             "device": str(device),
-            "angle_vc_pts": all_angle_vc_pts,  # injecté dès le début
+            "angle_vc_pts": all_angle_vc_pts,
         }
         for ep in range(epochs):
             model.train()
@@ -941,7 +970,6 @@ def run_train_session(session_name: str, epochs: int):
         model_filename = f"{session_name}_vc_model.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
 
-        # Prédictions NN sur TOUS les samples pour la courbe Vc_NN = f(theta)
         all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
         model.eval()
         all_preds = []
@@ -949,7 +977,6 @@ def run_train_session(session_name: str, epochs: int):
             for xb, _ in all_loader:
                 out = model(xb.to(device))
                 all_preds += out.squeeze().cpu().tolist() if out.squeeze().dim() > 0 else [out.squeeze().item()]
-        # Associe theta_i → pred_i pour le graphe Vc_NN = f(theta)
         nn_angle_vc_pts = []
         for i, (img_path, _) in enumerate(samples):
             p = Path(img_path)
@@ -972,8 +999,8 @@ def run_train_session(session_name: str, epochs: int):
             "preds": [round(float(p), 2) for p in preds_list],
             "true": [round(float(t), 2) for t in true_list],
             "model_name": session_name,
-            "angle_vc_pts": all_angle_vc_pts,        # courbe réelle (annotations)
-            "nn_angle_vc_pts": nn_angle_vc_pts,       # courbe modèle NN
+            "angle_vc_pts": all_angle_vc_pts,
+            "nn_angle_vc_pts": nn_angle_vc_pts,
         })
     except Exception as e:
         TRAIN_PROGRESS[session_name] = {"epoch": 0, "total_epochs": epochs, "status": "error", "error": str(e)}
@@ -994,10 +1021,6 @@ async def get_train_progress(name: str):
 
 @app.get("/api/sessions/{name}/angle-vc-data")
 async def get_session_angle_vc_data(name: str):
-    """
-    Retourne [{theta, vc}] pour une session spécifique.
-    Utilisé pour le graphique Vc = f(θ) de l'onglet session.
-    """
     meta = load_session_meta(name)
     session_dir = get_session_dir(name)
     ann_dir = session_dir / "annotations"
@@ -1070,7 +1093,6 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         train_samples = samples[:split]
         val_samples = samples[split:] if len(samples) > split else samples[-1:]
 
-        # Précalcul des paires (theta, vc) réelles
         all_angle_vc_pts = _build_angle_vc_pts(samples)
 
         tf_train = transforms.Compose([
@@ -1141,7 +1163,6 @@ def run_train_global(session_names: Optional[List[str]], epochs: int, model_name
         model_filename = f"{model_name}.pth"
         torch.save(model.state_dict(), MODELS_DIR / model_filename)
 
-        # Prédictions NN sur TOUS les samples
         all_loader = DataLoader(VcDataset(samples, tf_val), batch_size=min(16, len(samples)))
         model.eval()
         all_preds = []
@@ -1196,9 +1217,6 @@ async def get_global_train_progress():
 
 @app.get("/api/train/global/angle-vc-data")
 async def get_angle_vc_data():
-    """
-    Retourne [{theta, vc}] pour toutes les annotations de toutes les sessions.
-    """
     result = []
     if not DATA_DIR.exists():
         return result
