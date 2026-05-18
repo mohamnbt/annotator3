@@ -162,6 +162,12 @@ export default function HomePage() {
     await load();
   };
 
+  // ── Export sélection
+  const handleExportSelection = () => {
+    const params = Array.from(selected).map(n => `sessions=${encodeURIComponent(n)}`).join("&");
+    window.location.href = `http://localhost:8000/api/export/global/download?${params}`;
+  };
+
   // ── Import multi-vidéos
   const handleBulkDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -278,6 +284,13 @@ export default function HomePage() {
           <button className="btn btn-secondary" style={{ fontSize: 12 }}
             onClick={() => { setShowMoveModal(true); setMoveTarget(""); }}>
             📂 Déplacer vers dossier
+          </button>
+          <button
+            className="btn btn-secondary"
+            style={{ fontSize: 12, color: C.green, borderColor: "rgba(0,255,136,0.4)" }}
+            onClick={handleExportSelection}
+          >
+            ⬇ Export sélection
           </button>
           <button className="btn btn-red" style={{ fontSize: 12 }}
             onClick={() => setDeleteTargets(selArray)}>
