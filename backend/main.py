@@ -727,7 +727,6 @@ async def export_download(name: str):
     )
 
 @app.get("/api/export/global/download")
-<<<<<<< HEAD
 async def global_export_download(sessions: Optional[List[str]] = Query(None)):
     if sessions:
         session_names = sessions
@@ -736,20 +735,6 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
             d.name for d in sorted(DATA_DIR.iterdir())
             if d.is_dir() and (d / "session.json").exists()
         ]
-=======
-async def global_export_download(sessions: Optional[str] = Query(None)):
-    all_sessions = []
-    session_filter = [s.strip() for s in sessions.split(",") if s.strip()] if sessions else None
-
-    for d in sorted(DATA_DIR.iterdir()):
-        if d.is_dir() and (d / "session.json").exists():
-            if session_filter and d.name not in session_filter:
-                continue
-            try:
-                all_sessions.append(load_session_meta(d.name))
-            except Exception:
-                continue
->>>>>>> daa8eb8 (Mon code actuel)
 
     all_annotated = []
     for sname in session_names:
@@ -769,29 +754,12 @@ async def global_export_download(sessions: Optional[str] = Query(None)):
     split = int(len(all_annotated) * 0.8)
     train_imgs = all_annotated[:split]
     val_imgs = all_annotated[split:]
-<<<<<<< HEAD
-
     label = "_".join(session_names[:3]) if sessions else "global"
     dataset_name = label
     ROOT = "dataset/"
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         csv_items = []
-=======
-    
-    fieldnames = [
-        "session", "filename", "annotator_name", "current_speed_cm_s", "wave_amplitude_cm",
-        "wave_length_cm", "wave_speed_cm_s", "current_direction", "camera_angle",
-        "cable_angle_deg", "cable_angle_chord_deg", "cable_curvature_index",
-        "water_depth_m", "cable_tension_n", "notes", "split",
-    ]
-
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        csv_buf = io.StringIO()
-        writer = csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-
->>>>>>> daa8eb8 (Mon code actuel)
         for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
             for session_name, img_meta in imgs:
                 session_dir = get_session_dir(session_name)
@@ -808,7 +776,6 @@ async def global_export_download(sessions: Optional[str] = Query(None)):
                 if lbl_path.exists():
                     zf.write(lbl_path, f"{ROOT}labels/{split_name}/{unique_stem}.txt")
                 if ann_path.exists():
-<<<<<<< HEAD
                     zf.write(ann_path, f"{ROOT}metadata/{split_name}/{unique_stem}.json")
                 csv_items.append((split_name, session_name, unique_fn, ann_path))
 
@@ -822,25 +789,6 @@ async def global_export_download(sessions: Optional[str] = Query(None)):
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
         zf.writestr(f"{ROOT}train_yolo.py", _build_train_script(dataset_name))
-=======
-                    zf.write(ann_path, f"annotations/{split_name}/{session_name}__{stem}.json")
-                
-                # Ajout au CSV
-                row = {"session": session_name, "filename": unique, "split": split_name}
-                if ann_path.exists():
-                    with open(ann_path) as af:
-                        ann = json.load(af)
-                    flat = {k: v for k, v in ann.items() if k != "conditions"}
-                    row.update(flat)
-                    conditions = ann.get("conditions", {})
-                    for field in fieldnames:
-                        if field not in row and field in conditions:
-                            row[field] = conditions[field]
-                writer.writerow(row)
-
-        zf.writestr("dataset.yaml", "path: ./dataset\ntrain: images/train\nval: images/val\nnc: 1\nnames: ['cable']\n")
-        zf.writestr("annotations.csv", csv_buf.getvalue())
->>>>>>> daa8eb8 (Mon code actuel)
 
     buf.seek(0)
     return StreamingResponse(
@@ -850,9 +798,6 @@ async def global_export_download(sessions: Optional[str] = Query(None)):
     )
 
 
-<<<<<<< HEAD
-# ─── Statistics ──────────────────────────────────────────────────────────────────────────────────────────
-=======
 @app.get("/api/models/{model_name}/training-script")
 async def get_model_training_script(model_name: str):
     """
@@ -1005,7 +950,6 @@ print("\\nEntraînement terminé !")
 
 
 # ─── Statistics ────────────────────────────────────────────────────────────────────────────────────────────
->>>>>>> daa8eb8 (Mon code actuel)
 
 @app.get("/api/sessions/{name}/statistics")
 async def get_statistics(name: str):
@@ -1423,14 +1367,10 @@ async def get_global_train_progress():
 
 
 @app.get("/api/train/global/angle-vc-data")
-<<<<<<< HEAD
-async def get_angle_vc_data():
-=======
 async def get_angle_vc_data(sessions: Optional[str] = Query(None), folder: Optional[str] = Query(None)):
     """
     Retourne [{theta, vc}] pour un ensemble de sessions ou un dossier.
     """
->>>>>>> daa8eb8 (Mon code actuel)
     result = []
     if not DATA_DIR.exists():
         return result
@@ -1469,20 +1409,12 @@ async def get_angle_vc_data(sessions: Optional[str] = Query(None), folder: Optio
                 if theta_raw in ("", None) or vc_raw in ("", None):
                     continue
                 result.append({"theta": round(float(theta_raw), 3), "vc": round(float(vc_raw), 3)})
-<<<<<<< HEAD
-            except (ValueError, TypeError, KeyError):
-                continue
-=======
         except Exception:
             continue
->>>>>>> daa8eb8 (Mon code actuel)
     result.sort(key=lambda d: d["theta"])
     return result
 
 
-<<<<<<< HEAD
-# ─── Models ────────────────────────────────────────────────────────────────────────────────────────
-=======
 @app.get("/api/models/{model_name}/visualize")
 async def visualize_model(model_name: str):
     """
@@ -1591,7 +1523,6 @@ async def visualize_model(model_name: str):
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────────────────────────────────
->>>>>>> daa8eb8 (Mon code actuel)
 
 @app.get("/api/models")
 async def list_models():

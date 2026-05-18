@@ -289,7 +289,6 @@ export default function HomePage() {
             onClick={() => { setShowMoveModal(true); setMoveTarget(""); }}>
             📂 Déplacer vers dossier
           </button>
-<<<<<<< HEAD
           <button
             className="btn btn-secondary"
             style={{ fontSize: 12, color: C.green, borderColor: "rgba(0,255,136,0.4)" }}
@@ -297,11 +296,6 @@ export default function HomePage() {
           >
             ⬇ Export sélection
           </button>
-=======
-          <a href={exportBatchUrl(selArray)} className="btn btn-secondary" style={{ fontSize: 12, textDecoration: "none" }} download="batch_dataset.zip">
-            📦 Exporter la sélection
-          </a>
->>>>>>> daa8eb8 (Mon code actuel)
           <button className="btn btn-red" style={{ fontSize: 12 }}
             onClick={() => setDeleteTargets(selArray)}>
             🗑 Supprimer la sélection
