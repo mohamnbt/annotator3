@@ -357,10 +357,11 @@ def main():
         print("[ERREUR] ultralytics non installé. Lancez : pip install ultralytics")
         return
 
-    data_yaml = Path(__file__).parent / "dataset" / "dataset.yaml"
+    # train_yolo.py est DANS dataset/, donc dataset.yaml est au même niveau
+    data_yaml = Path(__file__).parent / "dataset.yaml"
     if not data_yaml.exists():
         print(f"[ERREUR] dataset.yaml introuvable : {{data_yaml}}")
-        print("Vérifiez que le dossier dataset/ est au même niveau que ce script.")
+        print("Vérifiez que dataset.yaml est au même niveau que ce script (dans dataset/).")
         return
 
     model = YOLO(args.model)
@@ -379,7 +380,7 @@ def main():
     if args.device:
         train_kwargs["device"] = args.device
 
-    print(f"\n🚀  Démarrage de l\'entraînement — dataset : {{data_yaml}}")
+    print(f"\\n🚀  Démarrage de l\'entraînement — dataset : {{data_yaml}}")
     print(f"    Modèle   : {{args.model}}")
     print(f"    Epochs   : {{args.epochs}}")
     print(f"    Img size : {{args.imgsz}}")
@@ -387,12 +388,12 @@ def main():
     print(f"    Résultats: {{args.project}}/{{args.name}}\\n")
 
     results = model.train(**train_kwargs)
-    print("\n✅  Entraînement terminé.")
+    print("\\n✅  Entraînement terminé.")
     print(f"    Meilleurs poids : {{args.project}}/{{args.name}}/weights/best.pt")
 
     # Validation finale
     metrics = model.val()
-    print(f"\n📊  Résultats validation :")
+    print(f"\\n📊  Résultats validation :")
     print(f"    mAP50-95 seg : {{metrics.seg.map:.4f}}")
     print(f"    mAP50    seg : {{metrics.seg.map50:.4f}}")
 
@@ -782,7 +783,7 @@ async def export_download(name: str):
         )
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
-        zf.writestr("train_yolo.py", _build_train_script(dataset_name))
+        zf.writestr(f"{ROOT}train_yolo.py", _build_train_script(dataset_name))
 
     buf.seek(0)
     return StreamingResponse(
@@ -854,7 +855,7 @@ async def global_export_download(sessions: Optional[List[str]] = Query(None)):
         )
         zf.writestr(f"{ROOT}dataset.yaml", yaml_content)
         zf.writestr(f"{ROOT}dataset_summary.csv", _build_csv(csv_items))
-        zf.writestr("train_yolo.py", _build_train_script(dataset_name))
+        zf.writestr(f"{ROOT}train_yolo.py", _build_train_script(dataset_name))
 
     buf.seek(0)
     return StreamingResponse(
